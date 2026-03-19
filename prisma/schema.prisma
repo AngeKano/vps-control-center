@@ -1,0 +1,198 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  OPERATOR
+  VIEWER
+}
+
+enum AuthType {
+  PASSWORD
+  KEY
+}
+
+enum VpsRole {
+  SOURCE
+  PROCESSING
+  TARGET
+  BACKUP
+}
+
+enum ScriptStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+enum TransferStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String?
+  role      Role     @default(VIEWER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions   Session[]
+  scriptRuns ScriptRun[]
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Vps {
+  id          String   @id @default(cuid())
+  name        String
+  host        String
+  port        Int      @default(22)
+  agentPort   Int      @default(4000)
+  username    String   @default("root")
+  authType    AuthType @default(PASSWORD)
+  password    String?
+  privateKey  String?
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  scripts   Script[]
+  projects  ProjectVps[]
+  transfers FileTransfer[]
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  color       String   @default("#6366F1")
+  workingDir  String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  vps     ProjectVps[]
+  scripts Script[]
+  queries SavedQuery[]
+}
+
+model ProjectVps {
+  id        String   @id @default(cuid())
+  projectId String
+  vpsId     String
+  role      VpsRole  @default(PROCESSING)
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  vps     Vps     @relation(fields: [vpsId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, vpsId])
+}
+
+model Script {
+  id          String   @id @default(cuid())
+  name        String
+  filename    String
+  command     String
+  description String?
+  workingDir  String?
+  vpsId       String
+  projectId   String
+  order       Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  vps     Vps           @relation(fields: [vpsId], references: [id], onDelete: Cascade)
+  project Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  config  ScriptConfig?
+  runs    ScriptRun[]
+}
+
+model ScriptConfig {
+  id        String   @id @default(cuid())
+  scriptId  String   @unique
+  config    Json
+  envVars   Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  script Script @relation(fields: [scriptId], references: [id], onDelete: Cascade)
+}
+
+model ScriptRun {
+  id         String       @id @default(cuid())
+  scriptId   String
+  userId     String
+  status     ScriptStatus @default(PENDING)
+  startedAt  DateTime     @default(now())
+  finishedAt DateTime?
+  duration   Int?
+  logs       String?      @db.Text
+  error      String?      @db.Text
+
+  script Script @relation(fields: [scriptId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model SavedQuery {
+  id          String   @id @default(cuid())
+  projectId   String
+  name        String
+  description String?
+  query       String   @db.Text
+  database    String   @default("default")
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model FileTransfer {
+  id           String         @id @default(cuid())
+  sourceVpsId  String
+  targetHost   String
+  targetPort   Int            @default(22)
+  targetUser   String         @default("root")
+  sourcePath   String
+  targetPath   String
+  status       TransferStatus @default(PENDING)
+  progress     Int            @default(0)
+  fileSize     BigInt?
+  startedAt    DateTime       @default(now())
+  completedAt  DateTime?
+  error        String?
+
+  sourceVps Vps @relation(fields: [sourceVpsId], references: [id], onDelete: Cascade)
+}
+
+model Setting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
