@@ -4,12 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { UserMenu } from "@/components/auth/user-menu";
-import { LayoutDashboard, Server, FileCode, Terminal, FolderKanban, Activity, Database, ArrowLeftRight, Settings } from "lucide-react";
+import { LayoutDashboard, Server, FileCode, Terminal, FolderKanban, Activity, Database, ArrowLeftRight, Settings, Workflow } from "lucide-react";
 
 const links = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard/projects", label: "Projets", icon: FolderKanban },
   { href: "/dashboard/vps", label: "VPS", icon: Server },
+  { href: "/dashboard/automations", label: "Automatisations", icon: Workflow },
   { href: "/dashboard/scripts", label: "Scripts", icon: FileCode },
   { href: "/dashboard/logs", label: "Logs", icon: Terminal },
   { href: "/dashboard/database", label: "Database", icon: Database },

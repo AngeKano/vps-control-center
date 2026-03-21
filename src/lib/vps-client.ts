@@ -87,6 +87,56 @@ export class VpsClient {
   async runNpmScript(cwd: string, script: string, name?: string): Promise<ApiResponse<unknown>> {
     return this.request("/api/pm2/run-script", { method: "POST", body: JSON.stringify({ cwd, script, name }) });
   }
+
+  // ---- Automation Engine methods ----
+
+  /** Execute a shell command on the VPS */
+  async exec(command: string, cwd?: string, timeout?: number): Promise<ApiResponse<{ stdout: string; stderr: string; exitCode: number }>> {
+    return this.request("/api/exec", {
+      method: "POST",
+      body: JSON.stringify({ command, cwd, timeout }),
+      signal: AbortSignal.timeout(timeout || 300000), // 5min default for long commands
+    } as RequestInit);
+  }
+
+  /** Read a file from VPS */
+  async readFile(filePath: string): Promise<ApiResponse<{ content: string }>> {
+    return this.request("/api/fs/read", {
+      method: "POST",
+      body: JSON.stringify({ path: filePath }),
+    });
+  }
+
+  /** Write a file on VPS */
+  async writeFile(filePath: string, content: string): Promise<ApiResponse<{ success: boolean }>> {
+    return this.request("/api/fs/write", {
+      method: "POST",
+      body: JSON.stringify({ path: filePath, content }),
+    });
+  }
+
+  /** Check if a path exists on VPS */
+  async pathExists(filePath: string): Promise<ApiResponse<{ exists: boolean; isDirectory: boolean; isEmpty?: boolean }>> {
+    return this.request("/api/fs/exists", {
+      method: "POST",
+      body: JSON.stringify({ path: filePath }),
+    });
+  }
+
+  /** List docker containers on VPS */
+  async listContainers(): Promise<ApiResponse<{ id: string; name: string; status: string; image: string }[]>> {
+    return this.request("/api/docker/containers");
+  }
+
+  /** Stream PM2 logs for a process (returns log lines) */
+  async getProcessLogs(name: string, lines?: number): Promise<ApiResponse<{ logs: string[] }>> {
+    return this.request(`/api/pm2/logs/${name}?lines=${lines || 50}`);
+  }
+
+  /** Check PM2 process status by name */
+  async getProcessStatus(name: string): Promise<ApiResponse<PM2Process | null>> {
+    return this.request(`/api/pm2/status/${name}`);
+  }
 }
 
 export function createVpsClient(host: string, port: number, apiKey: string): VpsClient {
