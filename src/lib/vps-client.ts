@@ -128,14 +128,20 @@ export class VpsClient {
     return this.request("/api/docker/containers");
   }
 
-  /** Stream PM2 logs for a process (returns log lines) */
-  async getProcessLogs(name: string, lines?: number): Promise<ApiResponse<{ logs: string[] }>> {
-    return this.request(`/api/pm2/logs/${name}?lines=${lines || 50}`);
-  }
-
-  /** Check PM2 process status by name */
+  /**
+   * Get PM2 process status by name.
+   * Uses /api/pm2/list and filters by name (since /api/pm2/status/:name doesn't exist on the agent).
+   */
   async getProcessStatus(name: string): Promise<ApiResponse<PM2Process | null>> {
-    return this.request(`/api/pm2/status/${name}`);
+    const result = await this.listProcesses();
+    if (!result.success || !result.data) {
+      return { success: false, error: result.error || "Failed to list processes" };
+    }
+    const process = result.data.find((p) => p.name === name);
+    if (!process) {
+      return { success: true, data: null };
+    }
+    return { success: true, data: process };
   }
 }
 

@@ -298,6 +298,9 @@ function AutomationCanvasInner() {
   // Panels
   const [activePanel, setActivePanel] = useState<"none" | "vps" | "vars" | "logs" | "addVps" | "envEditor">("none");
 
+  // Node panel tab (config vs logs)
+  const [nodeTab, setNodeTab] = useState<"config" | "logs">("config");
+
   // VPS
   const [availableVps, setAvailableVps] = useState<
     { id: string; name: string; host: string; username: string; agentPort: number; port: number }[]
@@ -418,7 +421,7 @@ function AutomationCanvasInner() {
         } catch (error) {
           console.error("Poll error:", error);
         }
-      }, 3000);
+      }, 15000); // Poll toutes les 15s — synchronisé avec le flush backend
     },
     [automationId, selectedNodeId, setNodes, fetchAutomation]
   );
@@ -871,13 +874,13 @@ function AutomationCanvasInner() {
         {/* ===== RIGHT PANEL ===== */}
         {showRightPanel && (
           <div className="w-[380px] border-l bg-card overflow-y-auto shrink-0">
-            {/* ---- Node Config Panel ---- */}
+            {/* ---- Node Panel with Tabs (Config / Logs) ---- */}
             {selectedNode && activePanel === "none" && (
-              <div className="p-4 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-semibold text-sm">Configuration</h3>
-                  <div className="flex items-center gap-1">
-                    {/* Restart from this node */}
+              <div className="flex flex-col h-full">
+                {/* Header */}
+                <div className="p-4 pb-0 flex items-center justify-between">
+                  <h3 className="font-semibold text-sm truncate">{getNodeData(selectedNode).label || "Sans nom"}</h3>
+                  <div className="flex items-center gap-1 shrink-0">
                     {!isRunning && selectedNodeState?.status === "FAILED" && (
                       <Button
                         variant="ghost"
@@ -911,176 +914,256 @@ function AutomationCanvasInner() {
 
                 {/* Run status banner */}
                 {selectedNodeState && (
-                  <div
-                    className={`text-xs rounded-md p-2 ${
-                      selectedNodeState.status === "COMPLETED"
-                        ? "bg-green-500/10 text-green-700"
-                        : selectedNodeState.status === "FAILED"
-                          ? "bg-red-500/10 text-red-700"
-                          : selectedNodeState.status === "RUNNING"
-                            ? "bg-blue-500/10 text-blue-700"
-                            : "bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    Status: {AUTOMATION_STATUS_LABELS[selectedNodeState.status] || selectedNodeState.status}
-                    {selectedNodeState.error && (
-                      <p className="mt-1 font-mono text-xs">{selectedNodeState.error}</p>
-                    )}
-                  </div>
-                )}
-
-                {/* Label */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Nom</Label>
-                  <Input
-                    value={getNodeData(selectedNode).label}
-                    onChange={(e) => updateNodeData(selectedNode.id, { label: e.target.value })}
-                    className="h-8 text-sm"
-                  />
-                </div>
-
-                {/* Type */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Type</Label>
-                  <div className="flex items-center gap-2 h-8 px-3 rounded-md border bg-muted/50 text-sm">
-                    {NODE_TYPE_LABELS[getNodeData(selectedNode).nodeType]}
-                  </div>
-                </div>
-
-                {/* VPS cible */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs">VPS cible</Label>
-                  <select
-                    value={getNodeData(selectedNode).vpsId || ""}
-                    onChange={(e) => updateNodeData(selectedNode.id, { vpsId: e.target.value })}
-                    className="w-full h-8 rounded-md border border-input bg-background px-3 text-sm"
-                  >
-                    <option value="">Sélectionner un VPS...</option>
-                    {(automation.workflowVps || []).map((wv: AutomationVps) => (
-                      <option key={wv.id} value={wv.id}>
-                        {wv.label} ({wv.vps.name})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Durée */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Durée estimée (min)</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    value={getNodeData(selectedNode).estimatedDuration || 0}
-                    onChange={(e) =>
-                      updateNodeData(selectedNode.id, {
-                        estimatedDuration: parseInt(e.target.value) || 0,
-                      })
-                    }
-                    className="h-8 text-sm"
-                  />
-                </div>
-
-                {/* Type-specific config */}
-                <NodeTypeConfig
-                  node={selectedNode}
-                  updateNodeData={updateNodeData}
-                  automation={automation}
-                />
-
-                {/* Env vars */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs">Variables .env</Label>
-                    <button
-                      className="text-xs text-primary hover:underline"
-                      onClick={() => {
-                        const current = getNodeData(selectedNode).envVars || [];
-                        updateNodeData(selectedNode.id, {
-                          envVars: [...current, { key: "", value: "" }],
-                        });
-                      }}
+                  <div className="px-4 pt-2">
+                    <div
+                      className={`text-xs rounded-md p-2 ${
+                        selectedNodeState.status === "COMPLETED"
+                          ? "bg-green-500/10 text-green-500"
+                          : selectedNodeState.status === "FAILED"
+                            ? "bg-red-500/10 text-red-500"
+                            : selectedNodeState.status === "RUNNING"
+                              ? "bg-blue-500/10 text-blue-500"
+                              : "bg-muted text-muted-foreground"
+                      }`}
                     >
-                      + Ajouter
-                    </button>
-                  </div>
-                  {(getNodeData(selectedNode).envVars || []).map(
-                    (env: { key: string; value: string }, i: number) => (
-                      <div key={i} className="flex items-center gap-1">
-                        <Input
-                          value={env.key}
-                          onChange={(e) => {
-                            const envVars = [...(getNodeData(selectedNode).envVars || [])];
-                            envVars[i] = { ...envVars[i], key: e.target.value };
-                            updateNodeData(selectedNode.id, { envVars });
-                          }}
-                          placeholder="KEY"
-                          className="h-7 text-xs font-mono flex-1"
-                        />
-                        <Input
-                          value={env.value}
-                          onChange={(e) => {
-                            const envVars = [...(getNodeData(selectedNode).envVars || [])];
-                            envVars[i] = { ...envVars[i], value: e.target.value };
-                            updateNodeData(selectedNode.id, { envVars });
-                          }}
-                          placeholder="value"
-                          className="h-7 text-xs font-mono flex-1"
-                        />
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 shrink-0"
-                          onClick={() => {
-                            const envVars = (getNodeData(selectedNode).envVars || []).filter(
-                              (_: { key: string; value: string }, idx: number) => idx !== i
-                            );
-                            updateNodeData(selectedNode.id, { envVars });
-                          }}
-                        >
-                          <X className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    )
-                  )}
-                </div>
-
-                {/* Notes */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Notes</Label>
-                  <textarea
-                    value={getNodeData(selectedNode).notes || ""}
-                    onChange={(e) => updateNodeData(selectedNode.id, { notes: e.target.value })}
-                    className="w-full min-h-[50px] rounded-md border border-input bg-background px-3 py-2 text-xs resize-y"
-                    rows={2}
-                  />
-                </div>
-
-                {/* Logs for this node (during/after run) */}
-                {selectedNodeLogs.length > 0 && (
-                  <div className="space-y-1.5 border-t pt-3">
-                    <Label className="text-xs flex items-center gap-1">
-                      <ScrollText className="h-3 w-3" /> Logs
-                    </Label>
-                    <div className="bg-black rounded-md p-2 max-h-[200px] overflow-y-auto">
-                      {selectedNodeLogs.map((line, i) => (
-                        <div
-                          key={i}
-                          className={`text-xs font-mono ${
-                            line.includes("[error]")
-                              ? "text-red-400"
-                              : line.includes("[done]") || line.includes("succès")
-                                ? "text-green-400"
-                                : line.includes("[env]")
-                                  ? "text-yellow-400"
-                                  : "text-gray-300"
-                          }`}
-                        >
-                          {line}
-                        </div>
-                      ))}
+                      Status: {AUTOMATION_STATUS_LABELS[selectedNodeState.status] || selectedNodeState.status}
+                      {selectedNodeState.error && (
+                        <p className="mt-1 font-mono text-xs opacity-80">{selectedNodeState.error}</p>
+                      )}
                     </div>
                   </div>
                 )}
+
+                {/* Tab switcher */}
+                <div className="px-4 pt-3 flex gap-1 border-b">
+                  <button
+                    onClick={() => setNodeTab("config")}
+                    className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors -mb-px ${
+                      nodeTab === "config"
+                        ? "border-primary text-primary"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <Pencil className="h-3 w-3 inline mr-1.5 -mt-0.5" />
+                    Configuration
+                  </button>
+                  <button
+                    onClick={() => setNodeTab("logs")}
+                    className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors -mb-px flex items-center gap-1.5 ${
+                      nodeTab === "logs"
+                        ? "border-primary text-primary"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <Terminal className="h-3 w-3" />
+                    Logs
+                    {selectedNodeLogs.length > 0 && (
+                      <span className="bg-muted text-muted-foreground rounded-full px-1.5 py-0.5 text-[10px] leading-none">
+                        {selectedNodeLogs.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
+
+                {/* Tab content */}
+                <div className="flex-1 overflow-y-auto">
+                  {/* ===== CONFIG TAB ===== */}
+                  {nodeTab === "config" && (
+                    <div className="p-4 space-y-4">
+                      {/* Label */}
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Nom</Label>
+                        <Input
+                          value={getNodeData(selectedNode).label}
+                          onChange={(e) => updateNodeData(selectedNode.id, { label: e.target.value })}
+                          className="h-8 text-sm"
+                        />
+                      </div>
+
+                      {/* Type */}
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Type</Label>
+                        <div className="flex items-center gap-2 h-8 px-3 rounded-md border bg-muted/50 text-sm">
+                          {NODE_TYPE_LABELS[getNodeData(selectedNode).nodeType]}
+                        </div>
+                      </div>
+
+                      {/* VPS cible */}
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">VPS cible</Label>
+                        <select
+                          value={getNodeData(selectedNode).vpsId || ""}
+                          onChange={(e) => updateNodeData(selectedNode.id, { vpsId: e.target.value })}
+                          className="w-full h-8 rounded-md border border-input bg-background px-3 text-sm"
+                        >
+                          <option value="">Sélectionner un VPS...</option>
+                          {(automation.workflowVps || []).map((wv: AutomationVps) => (
+                            <option key={wv.id} value={wv.id}>
+                              {wv.label} ({wv.vps.name})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Durée */}
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Durée estimée (min)</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          value={getNodeData(selectedNode).estimatedDuration || 0}
+                          onChange={(e) =>
+                            updateNodeData(selectedNode.id, {
+                              estimatedDuration: parseInt(e.target.value) || 0,
+                            })
+                          }
+                          className="h-8 text-sm"
+                        />
+                      </div>
+
+                      {/* Type-specific config */}
+                      <NodeTypeConfig
+                        node={selectedNode}
+                        updateNodeData={updateNodeData}
+                        automation={automation}
+                      />
+
+                      {/* Env vars */}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs">Variables .env</Label>
+                          <button
+                            className="text-xs text-primary hover:underline"
+                            onClick={() => {
+                              const current = getNodeData(selectedNode).envVars || [];
+                              updateNodeData(selectedNode.id, {
+                                envVars: [...current, { key: "", value: "" }],
+                              });
+                            }}
+                          >
+                            + Ajouter
+                          </button>
+                        </div>
+                        {(getNodeData(selectedNode).envVars || []).map(
+                          (env: { key: string; value: string }, i: number) => (
+                            <div key={i} className="flex items-center gap-1">
+                              <Input
+                                value={env.key}
+                                onChange={(e) => {
+                                  const envVars = [...(getNodeData(selectedNode).envVars || [])];
+                                  envVars[i] = { ...envVars[i], key: e.target.value };
+                                  updateNodeData(selectedNode.id, { envVars });
+                                }}
+                                placeholder="KEY"
+                                className="h-7 text-xs font-mono flex-1"
+                              />
+                              <Input
+                                value={env.value}
+                                onChange={(e) => {
+                                  const envVars = [...(getNodeData(selectedNode).envVars || [])];
+                                  envVars[i] = { ...envVars[i], value: e.target.value };
+                                  updateNodeData(selectedNode.id, { envVars });
+                                }}
+                                placeholder="value"
+                                className="h-7 text-xs font-mono flex-1"
+                              />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 shrink-0"
+                                onClick={() => {
+                                  const envVars = (getNodeData(selectedNode).envVars || []).filter(
+                                    (_: { key: string; value: string }, idx: number) => idx !== i
+                                  );
+                                  updateNodeData(selectedNode.id, { envVars });
+                                }}
+                              >
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          )
+                        )}
+                      </div>
+
+                      {/* Notes */}
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Notes</Label>
+                        <textarea
+                          value={getNodeData(selectedNode).notes || ""}
+                          onChange={(e) => updateNodeData(selectedNode.id, { notes: e.target.value })}
+                          className="w-full min-h-[50px] rounded-md border border-input bg-background px-3 py-2 text-xs resize-y"
+                          rows={2}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ===== LOGS TAB ===== */}
+                  {nodeTab === "logs" && (
+                    <div className="flex flex-col h-full">
+                      {/* Logs toolbar */}
+                      <div className="px-4 py-2 flex items-center justify-between border-b">
+                        <span className="text-xs text-muted-foreground">
+                          {selectedNodeLogs.length} lignes
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 text-xs px-2"
+                            onClick={() => setSelectedNodeLogs([])}
+                          >
+                            <Trash2 className="h-3 w-3 mr-1" />
+                            Effacer
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* Logs content */}
+                      <div
+                        className="flex-1 overflow-y-auto bg-gray-950 p-3 font-mono text-xs"
+                        ref={(el) => {
+                          if (el) el.scrollTop = el.scrollHeight;
+                        }}
+                      >
+                        {selectedNodeLogs.length === 0 ? (
+                          <div className="text-gray-500 text-center py-12">
+                            <Terminal className="h-8 w-8 mx-auto mb-3 opacity-30" />
+                            <p>En attente des logs...</p>
+                            <p className="text-[10px] mt-1 opacity-50">Les logs apparaîtront ici lors de l&apos;exécution</p>
+                          </div>
+                        ) : (
+                          selectedNodeLogs.map((line, i) => {
+                            const lower = line.toLowerCase();
+                            let color = "text-gray-300";
+                            if (lower.includes("[error]") || lower.includes("[pm2:err]") || lower.includes(":err]") || lower.includes("✗")) {
+                              color = "text-red-400";
+                            } else if (lower.includes("[done]") || lower.includes("succès") || lower.includes("terminé") || lower.includes("✓")) {
+                              color = "text-green-400";
+                            } else if (lower.includes("[env]") || lower.includes("warn")) {
+                              color = "text-yellow-400";
+                            } else if (lower.includes("[pm2] ⏳") || lower.includes("en cours")) {
+                              color = "text-blue-400";
+                            } else if (lower.includes("[start]") || lower.includes("démarrage") || lower.includes("socket")) {
+                              color = "text-cyan-400";
+                            } else if (lower.includes("[skip]")) {
+                              color = "text-gray-500";
+                            }
+
+                            return (
+                              <div
+                                key={i}
+                                className={`${color} hover:bg-gray-900/50 px-1 -mx-1 rounded leading-5`}
+                              >
+                                {line}
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 

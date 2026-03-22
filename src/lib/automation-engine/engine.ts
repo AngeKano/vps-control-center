@@ -93,15 +93,17 @@ export async function runAutomation(
     data: resolveVarsDeep(n.data, globalVars),
   }));
 
-  // Build VPS client map: workflowVps.id → VpsClient
+  // Build VPS client map: workflowVps.id → VpsClient + connection info
   const apiKey = process.env.VPS_API_KEY || "";
-  const vpsClients = new Map<string, { client: VpsClient; rootPath: string; envPath: string | null }>();
+  const vpsClients = new Map<string, { client: VpsClient; rootPath: string; envPath: string | null; host: string; agentPort: number }>();
 
   for (const wv of automation.workflowVps) {
     vpsClients.set(wv.id, {
       client: new VpsClient(wv.vps.host, wv.vps.agentPort, apiKey),
       rootPath: wv.rootPath,
       envPath: wv.envPath,
+      host: wv.vps.host,
+      agentPort: wv.vps.agentPort,
     });
   }
 
@@ -202,7 +204,7 @@ export async function runAutomation(
         nodeLogs[nodeId].push(`[start] Démarrage: ${node.data.label}`);
         await updateRunState(runId, nodeStates, nodeLogs);
 
-        // Execute
+        // Build executor context with flushLogs + VPS connection info for socket.io
         const ctx: ExecutorContext = {
           client: vpsInfo.client,
           rootPath: vpsInfo.rootPath,
@@ -210,9 +212,14 @@ export async function runAutomation(
           nodeData: node.data,
           onLog: (line: string) => {
             nodeLogs[nodeId].push(line);
-            // Throttled DB update (don't save every log line)
           },
           signal: abortController.signal,
+          flushLogs: async () => {
+            await updateRunState(runId, nodeStates, nodeLogs);
+          },
+          vpsHost: vpsInfo.host,
+          vpsAgentPort: vpsInfo.agentPort,
+          vpsApiKey: apiKey,
         };
 
         try {
@@ -252,7 +259,7 @@ export async function runAutomation(
       // Check if any node in this layer failed
       const anyFailed = toExecute.some((nodeId) => nodeStates[nodeId]?.status === "FAILED");
       if (anyFailed) {
-        // Mark all downstream nodes as failed/pending
+        // Mark all downstream nodes as not executed
         for (const nodeId of toExecute) {
           if (nodeStates[nodeId]?.status === "FAILED") {
             const downstream = getDownstreamNodes(nodeId, edges);
