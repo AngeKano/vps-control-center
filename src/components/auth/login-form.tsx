@@ -36,29 +36,16 @@ export function LoginForm() {
     }
   };
 
-  const handleDemoLogin = async (role: "admin" | "operator" | "viewer") => {
+  const demoCredentials = {
+    admin: { email: "admin@vpscontrol.local", password: "Admin2025!" },
+    operator: { email: "operator@vpscontrol.local", password: "Operator2025!" },
+    viewer: { email: "viewer@vpscontrol.local", password: "Viewer2025!" },
+  };
+
+  const handleDemoLogin = (role: "admin" | "operator" | "viewer") => {
     setError("");
-    setLoading(true);
-
-    const credentials = {
-      admin: { email: "admin@vpscontrol.local", password: "Admin2025!" },
-      operator: { email: "operator@vpscontrol.local", password: "Operator2025!" },
-      viewer: { email: "viewer@vpscontrol.local", password: "Viewer2025!" },
-    };
-
-    try {
-      const result = await signIn("credentials", { ...credentials[role], redirect: false });
-      if (result?.error) {
-        setError("Erreur - Avez-vous exécuté 'npm run db:seed' ?");
-      } else if (result?.ok) {
-        router.push("/dashboard");
-        router.refresh();
-      }
-    } catch {
-      setError("Une erreur est survenue");
-    } finally {
-      setLoading(false);
-    }
+    setEmail(demoCredentials[role].email);
+    setPassword(demoCredentials[role].password);
   };
 
   return (

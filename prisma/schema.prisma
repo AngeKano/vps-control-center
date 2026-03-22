@@ -49,8 +49,10 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sessions   Session[]
-  scriptRuns ScriptRun[]
+  sessions        Session[]
+  scriptRuns      ScriptRun[]
+  automations     Automation[]    @relation("AutomationCreator")
+  automationRuns  AutomationRun[] @relation("AutomationRunner")
 }
 
 model Session {
@@ -76,9 +78,10 @@ model Vps {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  scripts   Script[]
-  projects  ProjectVps[]
-  transfers FileTransfer[]
+  scripts        Script[]
+  projects       ProjectVps[]
+  transfers      FileTransfer[]
+  automationVps  AutomationVps[]
 }
 
 model Project {
@@ -195,4 +198,92 @@ model Setting {
   value     Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// ==========================================
+// AUTOMATISATIONS
+// ==========================================
+
+enum AutomationType {
+  MENSUELLE
+  ANNUELLE
+  TRIMESTRIELLE
+  SEMESTRIELLE
+}
+
+enum AutomationStatus {
+  DRAFT
+  READY
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+}
+
+model AutomationCategory {
+  id          String       @id @default(cuid())
+  name        String       @unique
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  automations Automation[]
+}
+
+model Automation {
+  id            String           @id @default(cuid())
+  name          String
+  type          AutomationType   @default(MENSUELLE)
+  description   String?
+  source        String?
+  releaseDate   DateTime?
+  status        AutomationStatus @default(DRAFT)
+
+  categoryId    String
+  category      AutomationCategory @relation(fields: [categoryId], references: [id])
+  userId        String
+  createdBy     User             @relation("AutomationCreator", fields: [userId], references: [id])
+
+  // Canvas React Flow data
+  nodes         Json             @default("[]")
+  edges         Json             @default("[]")
+
+  // Variables globales {{YEAR}}, {{PERIOD}}, etc.
+  globalVars    Json             @default("[]")
+
+  // Relations
+  workflowVps   AutomationVps[]
+  runs          AutomationRun[]
+
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+}
+
+model AutomationVps {
+  id            String     @id @default(cuid())
+  automationId  String
+  automation    Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  vpsId         String
+  vps           Vps        @relation(fields: [vpsId], references: [id])
+  label         String
+  rootPath      String
+  envPath       String?
+
+  @@unique([automationId, vpsId, label])
+}
+
+model AutomationRun {
+  id            String           @id @default(cuid())
+  automationId  String
+  automation    Automation       @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  status        AutomationStatus @default(RUNNING)
+  startedAt     DateTime         @default(now())
+  finishedAt    DateTime?
+
+  // Status par noeud: { "node-1": { status, startedAt, finishedAt, error } }
+  nodeStates    Json             @default("{}")
+  // Logs par noeud: { "node-1": ["line1", "line2"...] }
+  nodeLogs      Json             @default("{}")
+
+  userId        String
+  triggeredBy   User             @relation("AutomationRunner", fields: [userId], references: [id])
 }

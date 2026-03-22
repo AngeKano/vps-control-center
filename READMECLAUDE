@@ -1,0 +1,121 @@
+**Build réussi à 100%** ! Toutes les pages compilent. Récapitulons tout ce qui a été créé.
+
+---
+
+## Récap complet — Toutes les phases terminées
+
+### Phase 1 — Schema + API + Liste ✅
+
+**Prisma** (6 nouveaux modèles) :
+- `AutomationCategory`, `Automation`, `AutomationVps`, `AutomationRun`
+- Enums: `AutomationType`, `AutomationStatus`
+
+**API** :
+- `GET/POST /api/automations` — liste + création
+- `GET/PUT/DELETE /api/automations/[id]` — CRUD
+- `POST /api/automations/[id]/duplicate` — duplication
+- `GET/POST /api/automations/categories`
+
+**Frontend** :
+- `/dashboard/automations` — liste groupée par catégorie, recherche, filtre, modale de création
+
+---
+
+### Phase 2 — Canvas React Flow ✅
+
+- **7 types de noeuds** visuels avec couleurs et icônes distinctes
+- **Palette latérale** : clic pour ajouter un noeud
+- **Drag & connect** : relier les noeuds avec des edges animés
+- **Panneau de config** droit adaptatif par type (PM2, SSH structuré/libre, SCP, DB Export, DB Import, Tippecanoe, S3/R2)
+- **Variables .env** par noeud (clé/valeur)
+- **Variables globales** `{{KEY}}` avec résolution au runtime
+- **MiniMap + Controls + Zoom**
+
+---
+
+### Phase 3 — VPS Workflow + Vérification + .env ✅
+
+**API** :
+- `GET/POST /api/automations/[id]/vps` — lister/ajouter VPS au workflow
+- `PUT/DELETE /api/automations/[id]/vps/[vpsId]` — modifier/retirer
+- `POST /api/automations/[id]/vps/[vpsId]/verify` — vérifier rootPath + envPath existent sur le VPS
+- `GET/PUT /api/automations/[id]/vps/[vpsId]/env` — lire/écrire le .env depuis le VPS
+- `GET /api/vps/[id]/containers` — lister les containers Docker
+
+**Frontend** :
+- **Panneau VPS** : liste les VPS du workflow avec label, host, rootPath, envPath
+- **Bouton "Ajouter"** : formulaire avec sélection VPS, label, chemin racine, chemin .env
+- **Bouton "Vérifier"** : ping le VPS, vérifie que les chemins existent, affiche vert/rouge
+- **Éditeur .env** : charge le .env depuis le VPS dans un textarea noir/vert, modifiable, sauvegarde sur le VPS
+
+---
+
+### Phase 4 — Moteur d'exécution + Logs temps réel ✅
+
+**Moteur (`src/lib/automation-engine/`)** :
+- `dag.ts` — tri topologique, détection parallélisme (layers), détection cycles, downstream nodes
+- `env-resolver.ts` — résolution `{{VARIABLE}}` en profondeur dans les configs
+- `executors/index.ts` — 7 executors :
+  - **PM2** : démarre via agent, poll le status toutes les 5s, récupère les logs, cleanup
+  - **SSH** : mode structuré (docker exec) ou libre (rawCommand)
+  - **SCP** : transfert entre VPS
+  - **DB Export** : docker exec clickhouse + redirect vers fichier
+  - **DB Import** : bash script avec variables inline
+  - **Tippecanoe** : génération PMTiles avec options zoom/flags
+  - **S3/R2** : upload aws s3 cp avec endpoint/profile
+- `engine.ts` — orchestrateur :
+  - Résout les variables globales
+  - Exécute par couches (parallèles quand possible)
+  - Met à jour le .env avant chaque noeud si envVars définis
+  - Gère les états `DRAFT → RUNNING → COMPLETED/FAILED`
+  - Supporte l'arrêt via AbortController
+  - **Relance partielle** : `fromNodeId` skip les noeuds déjà réussis
+
+**API** :
+- `POST /api/automations/[id]/run` — lancer (avec `fromNodeId` optionnel pour relance partielle)
+- `GET /api/automations/[id]/run` — historique des runs
+- `GET /api/automations/[id]/run/[runId]` — état courant + logs par noeud
+- `DELETE /api/automations/[id]/run/[runId]` — stopper un run
+
+**Frontend temps réel** :
+- **Polling 3s** pendant l'exécution pour mettre à jour les états
+- **Noeuds colorés** : gris (pending), bleu pulsant (running), vert (success), rouge (failed)
+- **Icônes d'état** sur chaque noeud (spinner, check, alert)
+- **Logs par noeud** : clic sur un noeud running/terminé → affiche ses logs dans le panneau droit
+- **Bouton Stop** : arrête l'exécution en cours
+- **Bouton Relancer** (↻) : apparaît sur un noeud failed → relance depuis ce noeud sans refaire les étapes réussies
+- **Historique** : derniers 5 runs visibles dans la palette latérale
+
+---
+
+### Fichiers créés/modifiés
+
+```
+MODIFIÉS :
+  prisma/schema.prisma              (+80 lignes)
+  src/components/layout/sidebar.tsx  (+2 lignes)
+  src/lib/vps-client.ts             (+50 lignes)
+  package.json                      (+2 deps)
+
+CRÉÉS :
+  src/types/automation.ts
+  src/app/api/automations/route.ts
+  src/app/api/automations/[id]/route.ts
+  src/app/api/automations/[id]/duplicate/route.ts
+  src/app/api/automations/categories/route.ts
+  src/app/api/automations/[id]/vps/route.ts
+  src/app/api/automations/[id]/vps/[vpsId]/route.ts
+  src/app/api/automations/[id]/vps/[vpsId]/verify/route.ts
+  src/app/api/automations/[id]/vps/[vpsId]/env/route.ts
+  src/app/api/automations/[id]/run/route.ts
+  src/app/api/automations/[id]/run/[runId]/route.ts
+  src/app/api/vps/[id]/containers/route.ts
+  src/app/(dashboard)/dashboard/automations/page.tsx
+  src/app/(dashboard)/dashboard/automations/[id]/page.tsx
+  src/lib/automation-engine/engine.ts
+  src/lib/automation-engine/dag.ts
+  src/lib/automation-engine/env-resolver.ts
+  src/lib/automation-engine/executors/index.ts
+```
+
+**Note** : les executors communiquent via l'agent HTTP sur chaque VPS. Il faudra que tes agents VPS supportent les endpoints `/api/exec`, `/api/fs/read`, `/api/fs/write`, `/api/fs/exists`, `/api/docker/containers`, `/api/pm2/logs/:name`, `/api/pm2/status/:name`. Si certains n'existent pas encore sur l'agent, il faudra les ajouter côté agent.
