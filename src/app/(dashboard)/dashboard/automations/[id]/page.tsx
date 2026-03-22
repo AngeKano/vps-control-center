@@ -852,7 +852,7 @@ function AutomationCanvasInner() {
               style: { stroke: "#6366f1", strokeWidth: 2 },
             }}
           >
-            <Background gap={20} size={1} />
+            <Background gap={20} size={1} color="#092876" />
             <CanvasControls locked={canvasLocked} onToggleLock={() => setCanvasLocked(l => !l)} />
             <MiniMap nodeStrokeWidth={3} className="!bg-card !border-border" />
             {nodes.length === 0 && (
