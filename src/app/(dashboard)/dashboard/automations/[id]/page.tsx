@@ -36,7 +36,6 @@ import {
   X,
   Server,
   Trash2,
-  Variable,
   ChevronRight,
   Terminal,
   FolderSync,
@@ -66,7 +65,6 @@ import type {
   AutomationVps,
   AutomationNodeData,
   NodeType,
-  GlobalVar,
   PM2Config,
   SSHConfig,
   SCPConfig,
@@ -296,7 +294,7 @@ function AutomationCanvasInner() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   // Panels
-  const [activePanel, setActivePanel] = useState<"none" | "vps" | "vars" | "logs" | "addVps" | "envEditor">("none");
+  const [activePanel, setActivePanel] = useState<"none" | "vps" | "env" | "envEditor" | "logs" | "addVps">("none");
 
   // Node panel tab (config vs logs)
   const [nodeTab, setNodeTab] = useState<"config" | "logs">("config");
@@ -316,8 +314,6 @@ function AutomationCanvasInner() {
   const [envLoading, setEnvLoading] = useState(false);
   const [envSaving, setEnvSaving] = useState(false);
 
-  // Global vars
-  const [globalVars, setGlobalVars] = useState<GlobalVar[]>([]);
 
   // Canvas interaction lock
   const [canvasLocked, setCanvasLocked] = useState(false);
@@ -340,7 +336,6 @@ function AutomationCanvasInner() {
           setNodes(data.data.nodes || []);
           setEdges(data.data.edges || []);
         }
-        setGlobalVars(data.data.globalVars || []);
       }
     } catch (error) {
       console.error("Error:", error);
@@ -439,7 +434,7 @@ function AutomationCanvasInner() {
       const res = await fetch(`/api/automations/${automationId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nodes, edges, globalVars }),
+        body: JSON.stringify({ nodes, edges }),
       });
       const data = await res.json();
       if (data.success) {
@@ -545,7 +540,6 @@ function AutomationCanvasInner() {
         notes: "",
         nodeType: type,
         config: getDefaultConfig(type),
-        envVars: [],
       } satisfies AutomationNodeData,
     };
     setNodes((nds: Node[]) => [...nds, newNode]);
@@ -672,14 +666,7 @@ function AutomationCanvasInner() {
     }
   };
 
-  // ---- Global vars ----
-  const addGlobalVar = () => setGlobalVars([...globalVars, { key: "", value: "" }]);
-  const updateGlobalVar = (i: number, field: "key" | "value", val: string) => {
-    const u = [...globalVars];
-    u[i] = { ...u[i], [field]: val };
-    setGlobalVars(u);
-  };
-  const removeGlobalVar = (i: number) => setGlobalVars(globalVars.filter((_, idx) => idx !== i));
+  // ---- (Global vars removed — env is now centralized per VPS) ----
 
   // ---- Selected node ----
   const selectedNode = nodes.find((n: Node) => n.id === selectedNodeId);
@@ -747,15 +734,15 @@ function AutomationCanvasInner() {
             VPS ({automation.workflowVps?.length || 0})
           </Button>
           <Button
-            variant={activePanel === "vars" ? "default" : "outline"}
+            variant={activePanel === "env" ? "default" : "outline"}
             size="sm"
             onClick={() => {
-              setActivePanel(activePanel === "vars" ? "none" : "vars");
+              setActivePanel(activePanel === "env" ? "none" : "env");
               setSelectedNodeId(null);
             }}
           >
-            <Variable className="h-4 w-4 mr-1" />
-            Variables
+            <FileText className="h-4 w-4 mr-1" />
+            Env
           </Button>
           <div className="w-px h-6 bg-border mx-1" />
           <Button variant="outline" size="sm" onClick={handleSave} disabled={saving || isRunning}>
@@ -1027,63 +1014,6 @@ function AutomationCanvasInner() {
                         updateNodeData={updateNodeData}
                         automation={automation}
                       />
-
-                      {/* Env vars */}
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <Label className="text-xs">Variables .env</Label>
-                          <button
-                            className="text-xs text-primary hover:underline"
-                            onClick={() => {
-                              const current = getNodeData(selectedNode).envVars || [];
-                              updateNodeData(selectedNode.id, {
-                                envVars: [...current, { key: "", value: "" }],
-                              });
-                            }}
-                          >
-                            + Ajouter
-                          </button>
-                        </div>
-                        {(getNodeData(selectedNode).envVars || []).map(
-                          (env: { key: string; value: string }, i: number) => (
-                            <div key={i} className="flex items-center gap-1">
-                              <Input
-                                value={env.key}
-                                onChange={(e) => {
-                                  const envVars = [...(getNodeData(selectedNode).envVars || [])];
-                                  envVars[i] = { ...envVars[i], key: e.target.value };
-                                  updateNodeData(selectedNode.id, { envVars });
-                                }}
-                                placeholder="KEY"
-                                className="h-7 text-xs font-mono flex-1"
-                              />
-                              <Input
-                                value={env.value}
-                                onChange={(e) => {
-                                  const envVars = [...(getNodeData(selectedNode).envVars || [])];
-                                  envVars[i] = { ...envVars[i], value: e.target.value };
-                                  updateNodeData(selectedNode.id, { envVars });
-                                }}
-                                placeholder="value"
-                                className="h-7 text-xs font-mono flex-1"
-                              />
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 shrink-0"
-                                onClick={() => {
-                                  const envVars = (getNodeData(selectedNode).envVars || []).filter(
-                                    (_: { key: string; value: string }, idx: number) => idx !== i
-                                  );
-                                  updateNodeData(selectedNode.id, { envVars });
-                                }}
-                              >
-                                <X className="h-3 w-3" />
-                              </Button>
-                            </div>
-                          )
-                        )}
-                      </div>
 
                       {/* Notes */}
                       <div className="space-y-1.5">
@@ -1377,10 +1307,17 @@ function AutomationCanvasInner() {
               <div className="p-4 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="font-semibold text-sm">Éditeur .env</h3>
-                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setActivePanel("vps")}>
+                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setActivePanel("env")}>
                     <X className="h-3.5 w-3.5" />
                   </Button>
                 </div>
+
+                {/* Show which VPS this env belongs to */}
+                {envVpsId && automation.workflowVps && (
+                  <div className="text-xs text-muted-foreground font-mono bg-muted/50 rounded px-2 py-1">
+                    {automation.workflowVps.find((wv: AutomationVps) => wv.id === envVpsId)?.envPath || ""}
+                  </div>
+                )}
 
                 {envLoading ? (
                   <div className="flex items-center justify-center py-8">
@@ -1395,8 +1332,8 @@ function AutomationCanvasInner() {
                       spellCheck={false}
                     />
                     <div className="flex justify-end gap-2">
-                      <Button variant="outline" size="sm" onClick={() => setActivePanel("vps")}>
-                        Annuler
+                      <Button variant="outline" size="sm" onClick={() => setActivePanel("env")}>
+                        Retour
                       </Button>
                       <Button size="sm" onClick={saveEnvFile} disabled={envSaving}>
                         {envSaving && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
@@ -1408,48 +1345,71 @@ function AutomationCanvasInner() {
               </div>
             )}
 
-            {/* ---- Variables Panel ---- */}
-            {activePanel === "vars" && (
+            {/* ---- Env Files Panel ---- */}
+            {activePanel === "env" && (
               <div className="p-4 space-y-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-semibold text-sm">Variables globales</h3>
+                  <h3 className="font-semibold text-sm">Variables d&apos;environnement</h3>
                   <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setActivePanel("none")}>
                     <X className="h-3.5 w-3.5" />
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Utilisez{" "}
-                  <code className="px-1 py-0.5 rounded bg-muted font-mono">
-                    {"{{KEY}}"}
-                  </code>{" "}
-                  dans les configs. Lors de la duplication, changez juste ces
-                  variables.
+                  Fichiers .env de chaque VPS du workflow. Cliquez pour lire/modifier.
                 </p>
 
-                {globalVars.map((v, i) => (
-                  <div key={i} className="flex items-center gap-1">
-                    <Input
-                      value={v.key}
-                      onChange={(e) => updateGlobalVar(i, "key", e.target.value)}
-                      placeholder="KEY"
-                      className="h-7 text-xs font-mono flex-1"
-                    />
-                    <Input
-                      value={v.value}
-                      onChange={(e) => updateGlobalVar(i, "value", e.target.value)}
-                      placeholder="value"
-                      className="h-7 text-xs font-mono flex-1"
-                    />
-                    <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={() => removeGlobalVar(i)}>
-                      <X className="h-3 w-3" />
-                    </Button>
-                  </div>
-                ))}
+                {(!automation.workflowVps || automation.workflowVps.length === 0) ? (
+                  <p className="text-xs text-muted-foreground text-center py-4">
+                    Aucun VPS ajouté. Ajoutez un VPS au workflow pour gérer ses variables d&apos;environnement.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {automation.workflowVps.map((wv: AutomationVps) => (
+                      <div
+                        key={wv.id}
+                        className="border rounded-lg p-3 space-y-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Server className="h-3.5 w-3.5 text-muted-foreground" />
+                            <span className="text-sm font-medium">{wv.label}</span>
+                          </div>
+                          {wv.envPath ? (
+                            <Badge variant="outline" className="text-[10px]">
+                              .env
+                            </Badge>
+                          ) : (
+                            <Badge variant="secondary" className="text-[10px]">
+                              Pas de .env
+                            </Badge>
+                          )}
+                        </div>
 
-                <Button variant="outline" size="sm" onClick={addGlobalVar} className="w-full">
-                  <Plus className="h-3 w-3 mr-1" />
-                  Ajouter une variable
-                </Button>
+                        {wv.envPath ? (
+                          <>
+                            <p className="text-xs text-muted-foreground font-mono truncate">
+                              {wv.envPath}
+                            </p>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="w-full text-xs"
+                              onClick={() => openEnvEditor(wv.id)}
+                            >
+                              <Pencil className="h-3 w-3 mr-1" />
+                              Ouvrir et modifier
+                            </Button>
+                          </>
+                        ) : (
+                          <p className="text-xs text-muted-foreground italic">
+                            Aucun fichier .env configuré pour ce VPS.
+                            Modifiez le VPS dans l&apos;onglet VPS pour ajouter un chemin .env.
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -82,7 +82,6 @@ export interface AutomationNodeData {
   notes: string;
   nodeType: NodeType;
   config: NodeConfig;
-  envVars: { key: string; value: string }[];
 }
 
 // ---- Global Variable ----

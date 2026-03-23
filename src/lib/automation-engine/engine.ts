@@ -1,7 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { VpsClient } from "@/lib/vps-client";
 import { getExecutionLayers, getDownstreamNodes, getParents } from "./dag";
-import { resolveVarsDeep } from "./env-resolver";
 import {
   executePm2Script,
   executeSshCommand,
@@ -12,18 +11,38 @@ import {
   executeS3Upload,
   type ExecutorContext,
   type Executor,
+  type VpsInfo,
 } from "./executors";
-import type { AutomationNodeData, NodeType, GlobalVar } from "@/types/automation";
+import type { AutomationNodeData, NodeType } from "@/types/automation";
 
 // Track active runs so we can stop them
-const activeRuns = new Map<string, AbortController>();
+interface ActiveRun {
+  abortController: AbortController;
+  /** Active PM2 process names + their VPS clients, for cleanup on stop */
+  activePm2: Map<string, { pm2Name: string; client: VpsClient }>;
+}
 
-export function stopAutomationRun(runId: string) {
-  const controller = activeRuns.get(runId);
-  if (controller) {
-    controller.abort();
-    activeRuns.delete(runId);
-  }
+const activeRuns = new Map<string, ActiveRun>();
+
+export async function stopAutomationRun(runId: string) {
+  const run = activeRuns.get(runId);
+  if (!run) return;
+
+  // 1. Signal abort to all executors
+  run.abortController.abort();
+
+  // 2. Kill all active PM2 processes on the VPS immediately
+  const killPromises = Array.from(run.activePm2.entries()).map(async ([nodeId, { pm2Name, client }]) => {
+    try {
+      console.log(`[stop] Killing PM2 process "${pm2Name}" for node ${nodeId}`);
+      await client.deleteProcess(pm2Name);
+    } catch (err) {
+      console.error(`[stop] Failed to kill PM2 "${pm2Name}":`, err);
+    }
+  });
+
+  await Promise.allSettled(killPromises);
+  activeRuns.delete(runId);
 }
 
 // Map node types to executors
@@ -81,28 +100,27 @@ export async function runAutomation(
   fromNodeId?: string
 ): Promise<void> {
   const abortController = new AbortController();
-  activeRuns.set(runId, abortController);
+  const activePm2 = new Map<string, { pm2Name: string; client: VpsClient }>();
+  activeRuns.set(runId, { abortController, activePm2 });
 
   const nodes = (automation.nodes || []) as FlowNode[];
   const edges = (automation.edges || []) as FlowEdge[];
-  const globalVars = (automation.globalVars || []) as GlobalVar[];
 
-  // Resolve global variables in all node data
-  const resolvedNodes = nodes.map((n) => ({
-    ...n,
-    data: resolveVarsDeep(n.data, globalVars),
-  }));
+  // Nodes use their config directly — .env is managed centrally via the Env panel
+  const resolvedNodes = nodes;
 
   // Build VPS client map: workflowVps.id → VpsClient + connection info
   const apiKey = process.env.VPS_API_KEY || "";
-  const vpsClients = new Map<string, { client: VpsClient; rootPath: string; envPath: string | null; host: string; agentPort: number }>();
+  const allVps = new Map<string, VpsInfo>();
 
   for (const wv of automation.workflowVps) {
-    vpsClients.set(wv.id, {
+    allVps.set(wv.id, {
+      id: wv.id,
+      label: wv.label,
       client: new VpsClient(wv.vps.host, wv.vps.agentPort, apiKey),
       rootPath: wv.rootPath,
-      envPath: wv.envPath,
       host: wv.vps.host,
+      username: wv.vps.username,
       agentPort: wv.vps.agentPort,
     });
   }
@@ -125,7 +143,7 @@ export async function runAutomation(
   }
 
   // Initialize node states
-  const nodeStates: Record<string, { status: string; startedAt?: string; finishedAt?: string; error?: string }> = {};
+  const nodeStates: Record<string, { status: string; startedAt?: string; finishedAt?: string; error?: string; activePm2Name?: string }> = {};
   const nodeLogs: Record<string, string[]> = {};
 
   for (const node of resolvedNodes) {
@@ -187,7 +205,7 @@ export async function runAutomation(
         }
 
         // Get VPS client
-        const vpsInfo = node.data.vpsId ? vpsClients.get(node.data.vpsId) : null;
+        const vpsInfo = node.data.vpsId ? allVps.get(node.data.vpsId) : null;
         if (!vpsInfo) {
           nodeStates[nodeId] = {
             status: "FAILED",
@@ -208,8 +226,8 @@ export async function runAutomation(
         const ctx: ExecutorContext = {
           client: vpsInfo.client,
           rootPath: vpsInfo.rootPath,
-          envPath: vpsInfo.envPath,
           nodeData: node.data,
+          nodeId,
           onLog: (line: string) => {
             nodeLogs[nodeId].push(line);
           },
@@ -220,6 +238,20 @@ export async function runAutomation(
           vpsHost: vpsInfo.host,
           vpsAgentPort: vpsInfo.agentPort,
           vpsApiKey: apiKey,
+          registerPm2: (pm2Name: string) => {
+            activePm2.set(nodeId, { pm2Name, client: vpsInfo.client });
+            // Also persist in nodeStates so the stop route can find it from DB
+            if (nodeStates[nodeId]) {
+              nodeStates[nodeId].activePm2Name = pm2Name;
+            }
+          },
+          unregisterPm2: () => {
+            activePm2.delete(nodeId);
+            if (nodeStates[nodeId]) {
+              delete nodeStates[nodeId].activePm2Name;
+            }
+          },
+          allVps,
         };
 
         try {

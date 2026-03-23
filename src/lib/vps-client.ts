@@ -33,7 +33,7 @@ export class VpsClient {
     this.apiKey = apiKey;
   }
 
-  private async request<T>(endpoint: string, options?: RequestInit): Promise<ApiResponse<T>> {
+  async request<T>(endpoint: string, options?: RequestInit): Promise<ApiResponse<T>> {
     try {
       const response = await fetch(`${this.baseUrl}${endpoint}`, {
         ...options,
@@ -44,6 +44,13 @@ export class VpsClient {
         },
         signal: AbortSignal.timeout(10000),
       });
+
+      // Check if we got HTML back (404 page) instead of JSON
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        return { success: false, error: `Endpoint returned ${response.status} (non-JSON response)` };
+      }
+
       return await response.json();
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : "Request failed" };
@@ -88,39 +95,54 @@ export class VpsClient {
     return this.request("/api/pm2/run-script", { method: "POST", body: JSON.stringify({ cwd, script, name }) });
   }
 
-  // ---- Automation Engine methods ----
+  // ---- File system methods ----
+  // Agent exposes: GET /api/files/read?path=..., POST /api/files/write, GET /api/files/list?path=...
 
-  /** Execute a shell command on the VPS */
-  async exec(command: string, cwd?: string, timeout?: number): Promise<ApiResponse<{ stdout: string; stderr: string; exitCode: number }>> {
-    return this.request("/api/exec", {
-      method: "POST",
-      body: JSON.stringify({ command, cwd, timeout }),
-      signal: AbortSignal.timeout(timeout || 300000), // 5min default for long commands
-    } as RequestInit);
-  }
-
-  /** Read a file from VPS */
+  /** Read a file from VPS — uses GET /api/files/read?path=... */
   async readFile(filePath: string): Promise<ApiResponse<{ content: string }>> {
-    return this.request("/api/fs/read", {
-      method: "POST",
-      body: JSON.stringify({ path: filePath }),
-    });
+    return this.request(`/api/files/read?path=${encodeURIComponent(filePath)}`);
   }
 
-  /** Write a file on VPS */
+  /** Write a file on VPS — uses POST /api/files/write */
   async writeFile(filePath: string, content: string): Promise<ApiResponse<{ success: boolean }>> {
-    return this.request("/api/fs/write", {
+    return this.request("/api/files/write", {
       method: "POST",
       body: JSON.stringify({ path: filePath, content }),
     });
   }
 
-  /** Check if a path exists on VPS */
+  /** Check if a path exists on VPS — uses GET /api/files/list?path=... on the parent dir */
   async pathExists(filePath: string): Promise<ApiResponse<{ exists: boolean; isDirectory: boolean; isEmpty?: boolean }>> {
-    return this.request("/api/fs/exists", {
+    // Try to read the file/dir info via /api/files/list on parent
+    // Or simply try readFile and check the response
+    const result = await this.request<{ path: string; files: { name: string; isDirectory: boolean }[]; count: number }>(
+      `/api/files/list?path=${encodeURIComponent(filePath)}`
+    );
+
+    if (result.success && result.data) {
+      // Path exists and is a directory
+      return {
+        success: true,
+        data: { exists: true, isDirectory: true, isEmpty: result.data.count === 0 },
+      };
+    }
+
+    // Maybe it's a file — try reading it
+    const readResult = await this.readFile(filePath);
+    if (readResult.success) {
+      return { success: true, data: { exists: true, isDirectory: false } };
+    }
+
+    return { success: true, data: { exists: false, isDirectory: false } };
+  }
+
+  /** Execute a shell command on the VPS — uses POST /api/exec */
+  async exec(command: string, cwd?: string, timeout?: number): Promise<ApiResponse<{ stdout: string; stderr: string; exitCode: number }>> {
+    return this.request("/api/exec", {
       method: "POST",
-      body: JSON.stringify({ path: filePath }),
-    });
+      body: JSON.stringify({ command, cwd, timeout }),
+      signal: AbortSignal.timeout(timeout || 300000),
+    } as RequestInit);
   }
 
   /** List docker containers on VPS */
@@ -130,7 +152,7 @@ export class VpsClient {
 
   /**
    * Get PM2 process status by name.
-   * Uses /api/pm2/list and filters by name (since /api/pm2/status/:name doesn't exist on the agent).
+   * Uses /api/pm2/list and filters by name.
    */
   async getProcessStatus(name: string): Promise<ApiResponse<PM2Process | null>> {
     const result = await this.listProcesses();
