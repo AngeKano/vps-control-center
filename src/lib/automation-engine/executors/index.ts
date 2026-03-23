@@ -142,19 +142,25 @@ async function runCommandViaPm2(opts: {
 
   let socket: Socket | null = null;
   const maxDuration = Math.ceil(timeout / 1000);
+  // Temp file to capture exit code (PM2 "stopped" doesn't distinguish exit 0 vs exit 1)
+  const exitCodeFile = `/tmp/.pm2-exit-${pm2Name}`;
 
   try {
     onLog(`${logPrefix} Lancement PM2 "${pm2Name}"...`);
     await flushLogs();
 
-    // Escape single quotes for bash -c
+    // Wrap command to capture exit code:
+    // 1. Run the actual command
+    // 2. Save $? to a temp file
+    // 3. Exit with the same code
     const escaped = command.replace(/'/g, "'\\''");
+    const wrappedCommand = `${escaped}; __EXIT=$?; echo $__EXIT > ${exitCodeFile}; exit $__EXIT`;
 
     const startResult = await client.request<unknown>("/api/pm2/start", {
       method: "POST",
       body: JSON.stringify({
         script: "bash",
-        args: ["-c", escaped],
+        args: ["-c", wrappedCommand],
         name: pm2Name,
         cwd,
         interpreter: "none",
@@ -196,6 +202,7 @@ async function runCommandViaPm2(opts: {
     for (let cycle = 0; cycle < maxCycles; cycle++) {
       if (signal.aborted) {
         await client.deleteProcess(pm2Name);
+        cleanup(client, exitCodeFile);
         return { success: false, error: "Exécution annulée" };
       }
 
@@ -203,7 +210,18 @@ async function runCommandViaPm2(opts: {
 
       const statusResult = await client.getProcessStatus(pm2Name);
       if (!statusResult.success) { await flushLogs(); continue; }
-      if (!statusResult.data) { await flushLogs(); return { success: true }; }
+      if (!statusResult.data) {
+        // Process gone — check exit code file
+        const exitCode = await readExitCode(client, exitCodeFile);
+        await cleanup(client, exitCodeFile);
+        if (exitCode !== null && exitCode !== 0) {
+          onLog(`${logPrefix} ✗ Commande échouée (exit code: ${exitCode})`);
+          await flushLogs();
+          return { success: false, error: `Exit code: ${exitCode}` };
+        }
+        await flushLogs();
+        return { success: true };
+      }
 
       const status = statusResult.data.status;
       const elapsedMin = Math.floor(((cycle + 1) * POLL_INTERVAL_MS) / 60000);
@@ -213,19 +231,32 @@ async function runCommandViaPm2(opts: {
         await flushLogs();
         continue;
       }
-      if (status === "stopped") {
+
+      // Process finished (stopped or errored) — check REAL exit code
+      if (status === "stopped" || status === "errored") {
         if (socketConnected) await sleep(2000);
+
+        // Read exit code from temp file
+        const exitCode = await readExitCode(client, exitCodeFile);
         await client.deleteProcess(pm2Name);
+        await cleanup(client, exitCodeFile);
+
+        if (exitCode !== null && exitCode !== 0) {
+          onLog(`${logPrefix} ✗ Commande échouée — exit code: ${exitCode} (${elapsedMin}min)`);
+          await flushLogs();
+          return { success: false, error: `Commande échouée (exit code: ${exitCode})` };
+        }
+
+        if (status === "errored" && exitCode === null) {
+          // PM2 says errored but no exit code file — something bad happened
+          onLog(`${logPrefix} ✗ Erreur PM2 (${elapsedMin}min)`);
+          await flushLogs();
+          return { success: false, error: "Commande échouée (PM2 errored)" };
+        }
+
         onLog(`${logPrefix} ✓ Terminé (${elapsedMin}min)`);
         await flushLogs();
         return { success: true };
-      }
-      if (status === "errored") {
-        if (socketConnected) await sleep(2000);
-        await client.deleteProcess(pm2Name);
-        onLog(`${logPrefix} ✗ Erreur (${elapsedMin}min)`);
-        await flushLogs();
-        return { success: false, error: "Command failed (PM2 errored)" };
       }
 
       onLog(`${logPrefix} Status: ${status} (${elapsedMin}min)`);
@@ -233,14 +264,35 @@ async function runCommandViaPm2(opts: {
     }
 
     await client.deleteProcess(pm2Name);
+    await cleanup(client, exitCodeFile);
     return { success: false, error: `Timeout (>${Math.floor(maxDuration / 60)}min)` };
   } catch (error) {
     try { await client.deleteProcess(pm2Name); } catch { /* ignore */ }
+    await cleanup(client, exitCodeFile);
     return { success: false, error: error instanceof Error ? error.message : "Execution error" };
   } finally {
     unregisterPm2();
     if (socket) { try { socket.disconnect(); } catch { /* ignore */ } }
   }
+}
+
+/** Read exit code from temp file left by the PM2 wrapper */
+async function readExitCode(client: VpsClient, filePath: string): Promise<number | null> {
+  try {
+    const result = await client.readFile(filePath);
+    if (result.success && result.data?.content) {
+      const code = parseInt(result.data.content.trim(), 10);
+      return isNaN(code) ? null : code;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+/** Clean up the temp exit code file */
+async function cleanup(client: VpsClient, filePath: string): Promise<void> {
+  try {
+    await client.exec(`rm -f ${filePath}`, "/tmp", 5000);
+  } catch { /* ignore */ }
 }
 
 // ==========================================
@@ -411,16 +463,24 @@ export async function executeScpTransfer(ctx: ExecutorContext): Promise<Executor
 // ==========================================
 // DB Export Executor
 // ==========================================
+// ALWAYS uses PM2 (not /api/exec) because exports can take 30min-1h+
+// /api/exec would timeout on large tables
 export async function executeDbExport(ctx: ExecutorContext): Promise<ExecutorResult> {
   const config = ctx.nodeData.config as { dockerContainer: string; query: string; outputFile: string };
 
-  const command = `docker exec -i ${config.dockerContainer} clickhouse client --query="${config.query}" > ${config.outputFile}`;
+  // Sanitize query: remove newlines, trim, ensure single line for --query
+  const cleanQuery = (config.query || "").replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+
+  const command = `docker exec -i ${config.dockerContainer} clickhouse client --query="${cleanQuery}" > ${config.outputFile}`;
   ctx.onLog(`[db-export] Container: ${config.dockerContainer}`);
+  ctx.onLog(`[db-export] Query: ${cleanQuery}`);
   ctx.onLog(`[db-export] Output: ${config.outputFile}`);
 
-  return runCommand({
+  // Force PM2 mode — DB exports can be very long (30min+), /api/exec would timeout
+  return runCommandViaPm2({
     client: ctx.client, command, cwd: ctx.rootPath,
-    logPrefix: "[db-export]", timeout: 600000, signal: ctx.signal,
+    logPrefix: "[db-export]", timeout: 7200000, // 2h max
+    signal: ctx.signal,
     onLog: ctx.onLog, flushLogs: ctx.flushLogs,
     pm2Name: `db-export-${ctx.nodeId.slice(0, 8)}-${Date.now()}`,
     registerPm2: ctx.registerPm2, unregisterPm2: ctx.unregisterPm2,
@@ -431,18 +491,37 @@ export async function executeDbExport(ctx: ExecutorContext): Promise<ExecutorRes
 // ==========================================
 // DB Import Executor
 // ==========================================
+// ALWAYS uses PM2 — bash init scripts can take a long time
+//
+// Two modes:
+// 1. User fills variables array + scriptPath (e.g. "./init.sh")
+//    → command: DB_NAME="permis" TABLE_NAME="..." bash ./init.sh
+// 2. User puts the FULL command in scriptPath (env vars + bash ./init.sh)
+//    → command is used as-is
 export async function executeDbImport(ctx: ExecutorContext): Promise<ExecutorResult> {
   const config = ctx.nodeData.config as { scriptPath: string; variables: { key: string; value: string }[] };
 
-  const envParts = (config.variables || []).filter((v) => v.key.trim()).map((v) => `${v.key}="${v.value}"`).join(" ");
-  const command = envParts ? `${envParts} bash ${config.scriptPath}` : `bash ${config.scriptPath}`;
+  const hasVariables = (config.variables || []).some((v) => v.key.trim());
+  let command: string;
 
-  ctx.onLog(`[db-import] Script: ${config.scriptPath}`);
-  for (const v of config.variables || []) ctx.onLog(`[db-import] ${v.key}=${v.value}`);
+  if (hasVariables) {
+    // Variables provided via the form → prefix them before "bash scriptPath"
+    const envParts = config.variables.filter((v) => v.key.trim()).map((v) => `${v.key}="${v.value}"`).join(" ");
+    command = `${envParts} bash ${config.scriptPath}`;
+    ctx.onLog(`[db-import] Script: ${config.scriptPath}`);
+    for (const v of config.variables) {
+      if (v.key.trim()) ctx.onLog(`[db-import] ${v.key}=${v.value}`);
+    }
+  } else {
+    // No variables in the form → scriptPath IS the full command (may include inline env vars)
+    command = config.scriptPath;
+    ctx.onLog(`[db-import] Commande: ${config.scriptPath}`);
+  }
 
-  return runCommand({
+  return runCommandViaPm2({
     client: ctx.client, command, cwd: ctx.rootPath,
-    logPrefix: "[db-import]", timeout: 600000, signal: ctx.signal,
+    logPrefix: "[db-import]", timeout: 7200000, // 2h max
+    signal: ctx.signal,
     onLog: ctx.onLog, flushLogs: ctx.flushLogs,
     pm2Name: `db-import-${ctx.nodeId.slice(0, 8)}-${Date.now()}`,
     registerPm2: ctx.registerPm2, unregisterPm2: ctx.unregisterPm2,
@@ -464,9 +543,11 @@ export async function executeTippecanoe(ctx: ExecutorContext): Promise<ExecutorR
 
     ctx.onLog(`[tippecanoe] ${inputFile} → ${outputFile}`);
 
-    const result = await runCommand({
+    // Force PM2 — tippecanoe can take hours on large geojson files
+    const result = await runCommandViaPm2({
       client: ctx.client, command, cwd: ctx.rootPath,
-      logPrefix: "[tippecanoe]", timeout: 3600000, signal: ctx.signal,
+      logPrefix: "[tippecanoe]", timeout: 14400000, // 4h max per file
+      signal: ctx.signal,
       onLog: ctx.onLog, flushLogs: ctx.flushLogs,
       pm2Name: `tipp-${inputFile.replace(/[^a-z0-9]/gi, "").slice(0, 8)}-${Date.now()}`,
       registerPm2: ctx.registerPm2, unregisterPm2: ctx.unregisterPm2,
