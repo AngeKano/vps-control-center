@@ -253,7 +253,7 @@ function getDefaultConfig(
     case "db_import":
       return { scriptPath: "", variables: [] };
     case "tippecanoe":
-      return { inputFiles: [], minZoom: 14, maxZoom: 22, extraFlags: [] };
+      return { inputFile: "", outputDir: "", outputName: "", minZoom: 14, maxZoom: 22, dropRate: 0, flags: ["--no-feature-limit", "--no-tile-size-limit", "--no-simplification", "--extend-zooms-if-still-dropping"] };
     case "s3_upload":
       return { files: [], bucket: "", endpoint: "", profile: "", prefix: "" };
   }
@@ -1598,22 +1598,35 @@ function NodeTypeConfig({
         <div className="space-y-2 border-t pt-3">
           <p className="text-xs font-semibold text-muted-foreground">Config Tippecanoe</p>
           <div className="space-y-1.5">
-            <Label className="text-xs">Fichiers input (.geojson)</Label>
-            <textarea value={(c.inputFiles || []).join("\n")} onChange={(e) => updateConfig({ inputFiles: e.target.value.split("\n").filter((f: string) => f.trim()) })} placeholder={"pa.geojson\npd.geojson"} className="w-full min-h-[50px] rounded-md border border-input bg-background px-3 py-2 text-xs font-mono resize-y" rows={3} />
+            <Label className="text-xs">Fichier GeoJSON (chemin)</Label>
+            <Input value={c.inputFile || ""} onChange={(e) => updateConfig({ inputFile: e.target.value })} placeholder="/data/pc.geojson" className="h-7 text-xs font-mono" />
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Répertoire de sortie</Label>
+            <Input value={c.outputDir || ""} onChange={(e) => updateConfig({ outputDir: e.target.value })} placeholder="(défaut: rootPath du VPS)" className="h-7 text-xs font-mono" />
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Nom fichier final (.pmtiles)</Label>
+            <Input value={c.outputName || ""} onChange={(e) => updateConfig({ outputName: e.target.value })} placeholder="(défaut: même nom que le geojson)" className="h-7 text-xs font-mono" />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
             <div className="space-y-1.5">
               <Label className="text-xs">Zoom min</Label>
-              <Input type="number" value={c.minZoom || 14} onChange={(e) => updateConfig({ minZoom: parseInt(e.target.value) || 14 })} className="h-7 text-xs" />
+              <Input type="number" value={c.minZoom ?? 14} onChange={(e) => updateConfig({ minZoom: parseInt(e.target.value) || 0 })} className="h-7 text-xs" />
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs">Zoom max</Label>
-              <Input type="number" value={c.maxZoom || 22} onChange={(e) => updateConfig({ maxZoom: parseInt(e.target.value) || 22 })} className="h-7 text-xs" />
+              <Input type="number" value={c.maxZoom ?? 22} onChange={(e) => updateConfig({ maxZoom: parseInt(e.target.value) || 0 })} className="h-7 text-xs" />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Drop rate</Label>
+              <Input type="number" value={c.dropRate ?? 0} onChange={(e) => updateConfig({ dropRate: parseFloat(e.target.value) || 0 })} className="h-7 text-xs" step="0.1" />
             </div>
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">Flags</Label>
-            <Input value={(c.extraFlags || []).join(" ")} onChange={(e) => updateConfig({ extraFlags: e.target.value.split(" ").filter((f: string) => f.trim()) })} placeholder="--no-feature-limit" className="h-7 text-xs font-mono" />
+            <textarea value={(c.flags || []).join("\n")} onChange={(e) => updateConfig({ flags: e.target.value.split("\n").filter((f: string) => f.trim()) })} placeholder={"--no-feature-limit\n--no-tile-size-limit\n--no-simplification\n--extend-zooms-if-still-dropping"} className="w-full min-h-[60px] rounded-md border border-input bg-background px-3 py-2 text-xs font-mono resize-y" rows={4} />
+            <p className="text-[10px] text-muted-foreground">Un flag par ligne</p>
           </div>
         </div>
       );

@@ -50,10 +50,13 @@ export interface DBImportConfig {
 }
 
 export interface TippecanoeConfig {
-  inputFiles: string[];
+  inputFile: string;
+  outputDir: string;
+  outputName: string;
   minZoom: number;
   maxZoom: number;
-  extraFlags: string[];
+  dropRate: number;
+  flags: string[];
 }
 
 export interface S3Config {

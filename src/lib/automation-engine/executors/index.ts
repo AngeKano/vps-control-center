@@ -532,35 +532,68 @@ export async function executeDbImport(ctx: ExecutorContext): Promise<ExecutorRes
 // ==========================================
 // Tippecanoe Executor
 // ==========================================
+// Generates a single .pmtiles file from a single .geojson file.
+// Uses nohup + PM2 for long-running processes (can take hours on large files).
+// Completion is detected via PM2 status polling + exit code capture.
 export async function executeTippecanoe(ctx: ExecutorContext): Promise<ExecutorResult> {
-  const config = ctx.nodeData.config as { inputFiles: string[]; minZoom: number; maxZoom: number; extraFlags: string[] };
+  const config = ctx.nodeData.config as {
+    inputFile: string; outputDir: string; outputName: string;
+    minZoom: number; maxZoom: number; dropRate: number; flags: string[];
+  };
 
-  const failed: string[] = [];
-  for (const inputFile of config.inputFiles || []) {
-    const outputFile = inputFile.replace(/\.geojson$/, ".pmtiles");
-    const flags = [`-o ${outputFile}`, `--minimum-zoom=${config.minZoom || 14}`, `--maximum-zoom=${config.maxZoom || 22}`, ...(config.extraFlags || []), inputFile].join(" ");
-    const command = `tippecanoe ${flags}`;
-
-    ctx.onLog(`[tippecanoe] ${inputFile} → ${outputFile}`);
-
-    // Force PM2 — tippecanoe can take hours on large geojson files
-    const result = await runCommandViaPm2({
-      client: ctx.client, command, cwd: ctx.rootPath,
-      logPrefix: "[tippecanoe]", timeout: 14400000, // 4h max per file
-      signal: ctx.signal,
-      onLog: ctx.onLog, flushLogs: ctx.flushLogs,
-      pm2Name: `tipp-${inputFile.replace(/[^a-z0-9]/gi, "").slice(0, 8)}-${Date.now()}`,
-      registerPm2: ctx.registerPm2, unregisterPm2: ctx.unregisterPm2,
-      vpsHost: ctx.vpsHost, vpsAgentPort: ctx.vpsAgentPort, vpsApiKey: ctx.vpsApiKey,
-    });
-
-    if (!result.success) { failed.push(inputFile); ctx.onLog(`[tippecanoe] ✗ ${inputFile}: ${result.error}`); }
-    else ctx.onLog(`[tippecanoe] ✓ ${inputFile}`);
-    await ctx.flushLogs();
+  if (!config.inputFile?.trim()) {
+    return { success: false, error: "Fichier GeoJSON requis" };
   }
 
-  if (failed.length > 0) return { success: false, error: `Tippecanoe failed: ${failed.join(", ")}` };
-  ctx.onLog(`[tippecanoe] ✓ Toutes les tuiles générées`);
+  // Build output path: outputDir/outputName (default: same name as input with .pmtiles)
+  const baseName = config.inputFile.replace(/^.*[\\/]/, "").replace(/\.geojson$/i, "");
+  const outputName = (config.outputName || baseName).replace(/\.pmtiles$/i, "") + ".pmtiles";
+  const outputDir = config.outputDir?.trim() || ctx.rootPath;
+  const outputPath = `${outputDir}/${outputName}`;
+
+  // Build command parts
+  const parts: string[] = [
+    "tippecanoe",
+    `-o ${outputPath}`,
+    `'--minimum-zoom=${config.minZoom ?? 14}'`,
+    `'--maximum-zoom=${config.maxZoom ?? 22}'`,
+    `'--drop-rate=${config.dropRate ?? 0}'`,
+  ];
+
+  // Add user flags (e.g. --no-feature-limit, --no-tile-size-limit, etc.)
+  for (const flag of config.flags || []) {
+    if (flag.trim()) parts.push(flag.trim());
+  }
+
+  // Input file last
+  parts.push(config.inputFile);
+
+  const command = parts.join(" ");
+
+  ctx.onLog(`[tippecanoe] Input: ${config.inputFile}`);
+  ctx.onLog(`[tippecanoe] Output: ${outputPath}`);
+  ctx.onLog(`[tippecanoe] Zoom: ${config.minZoom ?? 14}-${config.maxZoom ?? 22} | Drop rate: ${config.dropRate ?? 0}`);
+  ctx.onLog(`[tippecanoe] Flags: ${(config.flags || []).join(" ") || "(aucun)"}`);
+  ctx.onLog(`[tippecanoe] Commande: ${command}`);
+
+  // Force PM2 — tippecanoe can take hours on large geojson files
+  const result = await runCommandViaPm2({
+    client: ctx.client, command, cwd: ctx.rootPath,
+    logPrefix: "[tippecanoe]", timeout: 14400000, // 4h max
+    signal: ctx.signal,
+    onLog: ctx.onLog, flushLogs: ctx.flushLogs,
+    pm2Name: `tipp-${baseName.replace(/[^a-z0-9]/gi, "").slice(0, 12)}-${Date.now()}`,
+    registerPm2: ctx.registerPm2, unregisterPm2: ctx.unregisterPm2,
+    vpsHost: ctx.vpsHost, vpsAgentPort: ctx.vpsAgentPort, vpsApiKey: ctx.vpsApiKey,
+  });
+
+  if (!result.success) {
+    ctx.onLog(`[tippecanoe] ✗ Échec: ${result.error}`);
+    await ctx.flushLogs();
+    return result;
+  }
+
+  ctx.onLog(`[tippecanoe] ✓ Tuile générée: ${outputPath}`);
   await ctx.flushLogs();
   return { success: true };
 }
