@@ -533,8 +533,21 @@ export async function executeDbImport(ctx: ExecutorContext): Promise<ExecutorRes
 // Tippecanoe Executor
 // ==========================================
 // Generates a single .pmtiles file from a single .geojson file.
-// Uses nohup + PM2 for long-running processes (can take hours on large files).
-// Completion is detected via PM2 status polling + exit code capture.
+//
+// WHY A SCRIPT FILE:
+// PM2 with `script:"bash", args:["-c", cmd]` does NOT pass args correctly
+// on this VPS agent — bash starts but receives no command (0% CPU, empty logs).
+// Solution: write a .sh script file to the VPS, then PM2 runs it as a file.
+//
+// Strategy:
+//   1. writeFile() → /tmp/tipp-{id}.sh with the full tippecanoe command
+//   2. PM2 start with script=/tmp/tipp-{id}.sh, interpreter=bash
+//   3. Poll PM2 status + read log file for progress
+//   4. On completion → check exit code + verify .pmtiles exists
+//   5. Cleanup script file
+//
+// Log file: output{pmtilesName}.log (same dir as .pmtiles)
+// User can: tail -f outputtest.log
 export async function executeTippecanoe(ctx: ExecutorContext): Promise<ExecutorResult> {
   const config = ctx.nodeData.config as {
     inputFile: string; outputDir: string; outputName: string;
@@ -545,57 +558,210 @@ export async function executeTippecanoe(ctx: ExecutorContext): Promise<ExecutorR
     return { success: false, error: "Fichier GeoJSON requis" };
   }
 
-  // Build output path: outputDir/outputName (default: same name as input with .pmtiles)
-  const baseName = config.inputFile.replace(/^.*[\\/]/, "").replace(/\.geojson$/i, "");
-  const outputName = (config.outputName || baseName).replace(/\.pmtiles$/i, "") + ".pmtiles";
-  const outputDir = config.outputDir?.trim() || ctx.rootPath;
-  const outputPath = `${outputDir}/${outputName}`;
+  // Resolve paths: relative → rootPath/relative, absolute → as-is
+  const resolve = (p: string) => p.startsWith("/") ? p : `${ctx.rootPath}/${p}`;
 
-  // Build command parts
+  const inputPath = resolve(config.inputFile.trim());
+  const baseName = inputPath.replace(/^.*\//, "").replace(/\.(geojson|json)$/i, "");
+
+  // Output .pmtiles path
+  const outputName = config.outputName?.trim()
+    ? resolve(config.outputName.trim())
+    : `${config.outputDir?.trim() ? resolve(config.outputDir.trim()) : ctx.rootPath}/${baseName}.pmtiles`;
+  const outputPath = outputName.endsWith(".pmtiles") ? outputName : `${outputName}.pmtiles`;
+
+  // Output log: output{pmtilesName}.log in same directory as .pmtiles
+  const pmtilesFileName = outputPath.replace(/^.*\//, "").replace(/\.pmtiles$/i, "");
+  const pmtilesDir = outputPath.replace(/\/[^/]+$/, "");
+  const logPath = `${pmtilesDir}/output${pmtilesFileName}.log`;
+
+  // Build tippecanoe command
   const parts: string[] = [
     "tippecanoe",
     `-o ${outputPath}`,
-    `'--minimum-zoom=${config.minZoom ?? 14}'`,
-    `'--maximum-zoom=${config.maxZoom ?? 22}'`,
-    `'--drop-rate=${config.dropRate ?? 0}'`,
+    `--minimum-zoom=${config.minZoom ?? 14}`,
+    `--maximum-zoom=${config.maxZoom ?? 22}`,
+    `--drop-rate=${config.dropRate ?? 0}`,
   ];
-
-  // Add user flags (e.g. --no-feature-limit, --no-tile-size-limit, etc.)
   for (const flag of config.flags || []) {
     if (flag.trim()) parts.push(flag.trim());
   }
+  parts.push(inputPath);
+  const tippecanoeCmd = parts.join(" ");
 
-  // Input file last
-  parts.push(config.inputFile);
+  // PM2 identifiers
+  const pm2Name = `tipp-${baseName.replace(/[^a-z0-9]/gi, "").slice(0, 12)}-${Date.now()}`;
+  const scriptPath = `/tmp/${pm2Name}.sh`;
+  const exitCodeFile = `/tmp/.pm2-exit-${pm2Name}`;
 
-  const command = parts.join(" ");
+  // Write shell script to VPS
+  // Uses PIPESTATUS[0] to capture tippecanoe's exit code (not tee's)
+  const scriptContent = [
+    "#!/bin/bash",
+    `${tippecanoeCmd} 2>&1 | tee ${logPath}`,
+    `__EXIT=\${PIPESTATUS[0]}`,
+    `echo $__EXIT > ${exitCodeFile}`,
+    `exit $__EXIT`,
+  ].join("\n");
 
-  ctx.onLog(`[tippecanoe] Input: ${config.inputFile}`);
+  ctx.onLog(`[tippecanoe] Input: ${inputPath}`);
   ctx.onLog(`[tippecanoe] Output: ${outputPath}`);
+  ctx.onLog(`[tippecanoe] Log: ${logPath}`);
   ctx.onLog(`[tippecanoe] Zoom: ${config.minZoom ?? 14}-${config.maxZoom ?? 22} | Drop rate: ${config.dropRate ?? 0}`);
   ctx.onLog(`[tippecanoe] Flags: ${(config.flags || []).join(" ") || "(aucun)"}`);
-  ctx.onLog(`[tippecanoe] Commande: ${command}`);
+  ctx.onLog(`[tippecanoe] Commande: ${tippecanoeCmd}`);
+  await ctx.flushLogs();
 
-  // Force PM2 — tippecanoe can take hours on large geojson files
-  const result = await runCommandViaPm2({
-    client: ctx.client, command, cwd: ctx.rootPath,
-    logPrefix: "[tippecanoe]", timeout: 14400000, // 4h max
-    signal: ctx.signal,
-    onLog: ctx.onLog, flushLogs: ctx.flushLogs,
-    pm2Name: `tipp-${baseName.replace(/[^a-z0-9]/gi, "").slice(0, 12)}-${Date.now()}`,
-    registerPm2: ctx.registerPm2, unregisterPm2: ctx.unregisterPm2,
-    vpsHost: ctx.vpsHost, vpsAgentPort: ctx.vpsAgentPort, vpsApiKey: ctx.vpsApiKey,
+  // Step 1: Write script file to VPS
+  const writeResult = await ctx.client.writeFile(scriptPath, scriptContent);
+  if (!writeResult.success) {
+    return { success: false, error: `Échec écriture script: ${writeResult.error}` };
+  }
+  ctx.onLog(`[tippecanoe] Script écrit: ${scriptPath}`);
+
+  // Step 2: Start PM2 with the script file (not bash -c)
+  ctx.onLog(`[tippecanoe] Lancement PM2 "${pm2Name}"...`);
+  await ctx.flushLogs();
+
+  const startResult = await ctx.client.request<unknown>("/api/pm2/start", {
+    method: "POST",
+    body: JSON.stringify({
+      script: scriptPath,
+      name: pm2Name,
+      cwd: ctx.rootPath,
+      interpreter: "bash",
+      autorestart: false,
+    }),
   });
 
-  if (!result.success) {
-    ctx.onLog(`[tippecanoe] ✗ Échec: ${result.error}`);
-    await ctx.flushLogs();
-    return result;
+  if (!startResult.success) {
+    return { success: false, error: `PM2 start failed: ${startResult.error}` };
   }
 
-  ctx.onLog(`[tippecanoe] ✓ Tuile générée: ${outputPath}`);
+  ctx.registerPm2(pm2Name);
+  ctx.onLog(`[tippecanoe] Process démarré (PM2: ${pm2Name})`);
   await ctx.flushLogs();
-  return { success: true };
+
+  // Step 3: Poll PM2 status + read log file for progress
+  let socket: Socket | null = null;
+  let lastLogContent = "";
+  const maxCycles = Math.ceil(14400 / (POLL_INTERVAL_MS / 1000)); // 4h max
+
+  try {
+    // Socket.IO for real-time logs (optional)
+    if (ctx.vpsHost && ctx.vpsAgentPort && ctx.vpsApiKey) {
+      try {
+        socket = io(`http://${ctx.vpsHost}:${ctx.vpsAgentPort}`, {
+          auth: { apiKey: ctx.vpsApiKey }, reconnection: false, timeout: 4000,
+        });
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(() => resolve(), 3000);
+          socket!.on("connect", () => {
+            clearTimeout(t);
+            socket!.emit("logs:subscribe", { processName: pm2Name });
+            resolve();
+          });
+          socket!.on("connect_error", () => { clearTimeout(t); resolve(); });
+        });
+        socket.on("logs:data", (log: { type: "out" | "err"; data: string }) => {
+          ctx.onLog(`[tippecanoe:${log.type === "err" ? "err" : "log"}] ${log.data}`);
+        });
+      } catch { /* optional */ }
+    }
+
+    for (let cycle = 0; cycle < maxCycles; cycle++) {
+      if (ctx.signal.aborted) {
+        await ctx.client.deleteProcess(pm2Name);
+        await cleanupTippecanoe(ctx.client, scriptPath, exitCodeFile);
+        return { success: false, error: "Exécution annulée" };
+      }
+
+      await sleep(POLL_INTERVAL_MS);
+      const elapsedMin = Math.floor(((cycle + 1) * POLL_INTERVAL_MS) / 60000);
+
+      // Read log file for progress
+      const logResult = await ctx.client.readFile(logPath);
+      if (logResult.success && logResult.data?.content && logResult.data.content !== lastLogContent) {
+        const content = logResult.data.content;
+        const progressMatch = content.match(/(\d+\.\d+%)\s+\d+\/\d+\/\d+/g);
+        if (progressMatch) {
+          const pct = progressMatch[progressMatch.length - 1].match(/(\d+\.\d+%)/);
+          ctx.onLog(`[tippecanoe] ⏳ ${pct?.[1] || "?"} (${elapsedMin}min)`);
+        }
+        lastLogContent = content;
+        await ctx.flushLogs();
+      }
+
+      // Check PM2 status
+      const statusResult = await ctx.client.getProcessStatus(pm2Name);
+      if (!statusResult.success) continue;
+
+      if (!statusResult.data) {
+        // Process disappeared from PM2
+        const exitCode = await readExitCode(ctx.client, exitCodeFile);
+        await cleanupTippecanoe(ctx.client, scriptPath, exitCodeFile);
+        if (exitCode !== null && exitCode !== 0) {
+          ctx.onLog(`[tippecanoe] ✗ Échec (exit code: ${exitCode}, ${elapsedMin}min)`);
+          await ctx.flushLogs();
+          return { success: false, error: `Exit code: ${exitCode}` };
+        }
+        ctx.onLog(`[tippecanoe] ✓ Tuile générée: ${outputPath} (${elapsedMin}min)`);
+        ctx.onLog(`[tippecanoe] Log: ${logPath}`);
+        await ctx.flushLogs();
+        return { success: true };
+      }
+
+      const status = statusResult.data.status;
+      if (status === "online") {
+        ctx.onLog(`[tippecanoe] ⏳ En cours... (${elapsedMin}min) — CPU: ${statusResult.data.cpu || 0}% | MEM: ${formatBytes(statusResult.data.memory || 0)}`);
+        await ctx.flushLogs();
+        continue;
+      }
+
+      // Process finished (stopped or errored)
+      await sleep(2000);
+      const exitCode = await readExitCode(ctx.client, exitCodeFile);
+      await ctx.client.deleteProcess(pm2Name);
+      await cleanupTippecanoe(ctx.client, scriptPath, exitCodeFile);
+
+      if ((exitCode !== null && exitCode !== 0) || status === "errored") {
+        // Read log for error details
+        const errLog = await ctx.client.readFile(logPath);
+        if (errLog.success && errLog.data?.content) {
+          const errLines = errLog.data.content.split("\n").filter((l: string) => /error|failed/i.test(l)).slice(-3);
+          for (const line of errLines) ctx.onLog(`[tippecanoe] ${line.trim()}`);
+        }
+        ctx.onLog(`[tippecanoe] ✗ Échec (exit code: ${exitCode ?? "?"}, ${elapsedMin}min)`);
+        await ctx.flushLogs();
+        return { success: false, error: `Tippecanoe échoué (exit code: ${exitCode ?? "errored"})` };
+      }
+
+      // Success
+      const finalLog = await ctx.client.readFile(logPath);
+      if (finalLog.success && finalLog.data?.content) {
+        const lastLines = finalLog.data.content.split("\n").filter((l: string) => l.trim()).slice(-3);
+        for (const line of lastLines) ctx.onLog(`[tippecanoe] ${line.trim()}`);
+      }
+      ctx.onLog(`[tippecanoe] ✓ Tuile générée: ${outputPath} (${elapsedMin}min)`);
+      ctx.onLog(`[tippecanoe] Log: ${logPath}`);
+      await ctx.flushLogs();
+      return { success: true };
+    }
+
+    // Timeout
+    await ctx.client.deleteProcess(pm2Name);
+    await cleanupTippecanoe(ctx.client, scriptPath, exitCodeFile);
+    return { success: false, error: "Timeout: > 4h" };
+  } finally {
+    ctx.unregisterPm2();
+    if (socket) { try { socket.disconnect(); } catch { /* ignore */ } }
+  }
+}
+
+/** Clean up temp files left by tippecanoe executor */
+async function cleanupTippecanoe(client: VpsClient, scriptPath: string, exitCodeFile: string): Promise<void> {
+  try { await client.writeFile(scriptPath, ""); } catch { /* ignore */ }
+  // Note: can't rm via exec (404), but empty file is fine
 }
 
 // ==========================================
