@@ -1598,16 +1598,19 @@ function NodeTypeConfig({
         <div className="space-y-2 border-t pt-3">
           <p className="text-xs font-semibold text-muted-foreground">Config Tippecanoe</p>
           <div className="space-y-1.5">
-            <Label className="text-xs">Fichier GeoJSON (chemin)</Label>
-            <Input value={c.inputFile || ""} onChange={(e) => updateConfig({ inputFile: e.target.value })} placeholder="/data/pc.geojson" className="h-7 text-xs font-mono" />
+            <Label className="text-xs">Fichier GeoJSON</Label>
+            <Input value={c.inputFile || ""} onChange={(e) => updateConfig({ inputFile: e.target.value })} placeholder="pd.geojson" className="h-7 text-xs font-mono" />
+            <p className="text-[10px] text-muted-foreground">Relatif au rootPath ou chemin absolu</p>
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">Répertoire de sortie</Label>
-            <Input value={c.outputDir || ""} onChange={(e) => updateConfig({ outputDir: e.target.value })} placeholder="(défaut: rootPath du VPS)" className="h-7 text-xs font-mono" />
+            <Input value={c.outputDir || ""} onChange={(e) => updateConfig({ outputDir: e.target.value })} placeholder="(défaut: rootPath)" className="h-7 text-xs font-mono" />
+            <p className="text-[10px] text-muted-foreground">Relatif au rootPath ou absolu. Vide = rootPath</p>
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">Nom fichier final (.pmtiles)</Label>
             <Input value={c.outputName || ""} onChange={(e) => updateConfig({ outputName: e.target.value })} placeholder="(défaut: même nom que le geojson)" className="h-7 text-xs font-mono" />
+            <p className="text-[10px] text-muted-foreground">Relatif au rootPath ou absolu. Vide = nom du geojson</p>
           </div>
           <div className="grid grid-cols-3 gap-2">
             <div className="space-y-1.5">

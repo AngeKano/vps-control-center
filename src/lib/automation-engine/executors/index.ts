@@ -545,11 +545,19 @@ export async function executeTippecanoe(ctx: ExecutorContext): Promise<ExecutorR
     return { success: false, error: "Fichier GeoJSON requis" };
   }
 
-  // Build output path: outputDir/outputName (default: same name as input with .pmtiles)
-  const baseName = config.inputFile.replace(/^.*[\\/]/, "").replace(/\.geojson$/i, "");
-  const outputName = (config.outputName || baseName).replace(/\.pmtiles$/i, "") + ".pmtiles";
-  const outputDir = config.outputDir?.trim() || ctx.rootPath;
-  const outputPath = `${outputDir}/${outputName}`;
+  // Resolve paths: relative paths are prefixed with rootPath
+  // "pd.geojson"       → "/home/manu/.../tiles/permis/pd.geojson"
+  // "/abs/pd.geojson"  → "/abs/pd.geojson"
+  const resolve = (p: string) => p.startsWith("/") ? p : `${ctx.rootPath}/${p}`;
+
+  const inputPath = resolve(config.inputFile.trim());
+  const baseName = inputPath.replace(/^.*\//, "").replace(/\.geojson$/i, "");
+  const outputName = (config.outputName?.trim()
+    ? resolve(config.outputName.trim())
+    : `${config.outputDir?.trim() ? resolve(config.outputDir.trim()) : ctx.rootPath}/${baseName}.pmtiles`
+  );
+  // If outputName was provided, ensure .pmtiles extension
+  const outputPath = outputName.endsWith(".pmtiles") ? outputName : `${outputName}.pmtiles`;
 
   // Build command parts
   const parts: string[] = [
@@ -566,11 +574,11 @@ export async function executeTippecanoe(ctx: ExecutorContext): Promise<ExecutorR
   }
 
   // Input file last
-  parts.push(config.inputFile);
+  parts.push(inputPath);
 
   const command = parts.join(" ");
 
-  ctx.onLog(`[tippecanoe] Input: ${config.inputFile}`);
+  ctx.onLog(`[tippecanoe] Input: ${inputPath}`);
   ctx.onLog(`[tippecanoe] Output: ${outputPath}`);
   ctx.onLog(`[tippecanoe] Zoom: ${config.minZoom ?? 14}-${config.maxZoom ?? 22} | Drop rate: ${config.dropRate ?? 0}`);
   ctx.onLog(`[tippecanoe] Flags: ${(config.flags || []).join(" ") || "(aucun)"}`);
