@@ -1658,21 +1658,10 @@ function NodeTypeConfig({
               <Input value={c.profile || ""} onChange={(e) => updateConfig({ profile: e.target.value })} placeholder="r2" className="h-7 text-xs font-mono" />
             </div>
           </div>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-xs">Fichiers</Label>
-              <button className="text-xs text-primary hover:underline" onClick={() => updateConfig({ files: [...(c.files || []), { source: "", destKey: "" }] })}>+ Ajouter</button>
-            </div>
-            {(c.files || []).map((f: { source: string; destKey: string }, i: number) => (
-              <div key={i} className="flex items-center gap-1">
-                <Input value={f.source} onChange={(e) => { const files = [...(c.files || [])]; files[i] = { ...files[i], source: e.target.value }; updateConfig({ files }); }} placeholder="pa.pmtiles" className="h-7 text-xs font-mono flex-1" />
-                <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-                <Input value={f.destKey} onChange={(e) => { const files = [...(c.files || [])]; files[i] = { ...files[i], destKey: e.target.value }; updateConfig({ files }); }} placeholder="permis/pa.pmtiles" className="h-7 text-xs font-mono flex-1" />
-                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={() => updateConfig({ files: (c.files || []).filter((_: { source: string; destKey: string }, idx: number) => idx !== i) })}>
-                  <X className="h-3 w-3" />
-                </Button>
-              </div>
-            ))}
+          <div className="space-y-1.5">
+            <Label className="text-xs">Fichiers</Label>
+            <textarea value={(c.files || []).join("\n")} onChange={(e) => updateConfig({ files: e.target.value.split("\n").filter((f: string) => f.trim()) })} placeholder={"/home/manu/.../test.pmtiles\n/home/manu/.../pa.pmtiles"} className="w-full min-h-[50px] rounded-md border border-input bg-background px-3 py-2 text-xs font-mono resize-y" rows={3} />
+            <p className="text-[10px] text-muted-foreground">Un chemin absolu par ligne. Destination = prefix + nom du fichier</p>
           </div>
         </div>
       );
