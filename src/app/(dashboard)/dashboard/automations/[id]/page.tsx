@@ -7,6 +7,7 @@ import {
   Background,
   MiniMap,
   addEdge,
+  reconnectEdge,
   useNodesState,
   useEdgesState,
   Handle,
@@ -36,6 +37,7 @@ import {
   X,
   Server,
   Trash2,
+  Copy,
   ChevronRight,
   Terminal,
   FolderSync,
@@ -554,6 +556,34 @@ function AutomationCanvasInner() {
     setSelectedNodeId(null);
   };
 
+  // ---- Duplicate node ----
+  const handleDuplicateNode = (nodeId: string) => {
+    const sourceNode = nodes.find((n) => n.id === nodeId);
+    if (!sourceNode) return;
+    const newNode: Node = {
+      id: `node-${Date.now()}`,
+      type: "automation",
+      position: {
+        x: sourceNode.position.x + 50,
+        y: sourceNode.position.y + 80,
+      },
+      data: JSON.parse(JSON.stringify(sourceNode.data)),
+    };
+    // Append "(copie)" to the label
+    const d = newNode.data as unknown as AutomationNodeData;
+    d.label = `${d.label} (copie)`;
+    setNodes((nds: Node[]) => [...nds, newNode]);
+    setSelectedNodeId(newNode.id);
+  };
+
+  // ---- Reconnect edge ----
+  const onReconnect = useCallback(
+    (oldEdge: Edge, newConnection: Connection) => {
+      setEdges((eds: Edge[]) => reconnectEdge(oldEdge, newConnection, eds));
+    },
+    [setEdges]
+  );
+
   // ---- Update node data ----
   const updateNodeData = (nodeId: string, newData: Partial<AutomationNodeData>) => {
     setNodes((nds: Node[]) =>
@@ -829,12 +859,15 @@ function AutomationCanvasInner() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onReconnect={onReconnect}
             onNodeClick={onNodeClick}
             onPaneClick={onPaneClick}
             nodeTypes={nodeTypes}
             nodesDraggable={!canvasLocked}
             nodesConnectable={!canvasLocked}
             elementsSelectable={!canvasLocked}
+            edgesReconnectable={!canvasLocked}
+            deleteKeyCode={canvasLocked ? null : "Delete"}
             fitView
             className="bg-background"
             defaultEdgeOptions={{
@@ -879,6 +912,16 @@ function AutomationCanvasInner() {
                         <RotateCcw className="h-3.5 w-3.5" />
                       </Button>
                     )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      title="Dupliquer ce noeud"
+                      onClick={() => handleDuplicateNode(selectedNode.id)}
+                      disabled={isRunning}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
                     <Button
                       variant="ghost"
                       size="icon"
