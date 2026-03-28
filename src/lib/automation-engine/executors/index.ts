@@ -118,6 +118,10 @@ async function runCommand(opts: {
 // ==========================================
 // Fallback: Run command as PM2 process
 // ==========================================
+// IMPORTANT: Uses a script FILE approach instead of bash -c "command".
+// The VPS agent does not pass args correctly with bash -c (bash starts
+// but receives no command → 0% CPU, empty logs, hangs forever).
+// Solution: write a .sh script to /tmp, then PM2 runs it as a file.
 async function runCommandViaPm2(opts: {
   client: VpsClient;
   command: string;
@@ -142,28 +146,38 @@ async function runCommandViaPm2(opts: {
 
   let socket: Socket | null = null;
   const maxDuration = Math.ceil(timeout / 1000);
-  // Temp file to capture exit code (PM2 "stopped" doesn't distinguish exit 0 vs exit 1)
   const exitCodeFile = `/tmp/.pm2-exit-${pm2Name}`;
+  const scriptFile = `/tmp/${pm2Name}.sh`;
 
   try {
     onLog(`${logPrefix} Lancement PM2 "${pm2Name}"...`);
     await flushLogs();
 
-    // Wrap command to capture exit code:
-    // 1. Run the actual command
-    // 2. Save $? to a temp file
+    // Write a shell script to the VPS with:
+    // 1. The actual command
+    // 2. Capture exit code to a temp file
     // 3. Exit with the same code
-    const escaped = command.replace(/'/g, "'\\''");
-    const wrappedCommand = `${escaped}; __EXIT=$?; echo $__EXIT > ${exitCodeFile}; exit $__EXIT`;
+    const scriptContent = [
+      "#!/bin/bash",
+      command,
+      `__EXIT=$?`,
+      `echo $__EXIT > ${exitCodeFile}`,
+      `exit $__EXIT`,
+    ].join("\n");
 
+    const writeResult = await client.writeFile(scriptFile, scriptContent);
+    if (!writeResult.success) {
+      return { success: false, error: `Échec écriture script: ${writeResult.error}` };
+    }
+
+    // Start PM2 with the script file (interpreter=bash runs: bash /tmp/xxx.sh)
     const startResult = await client.request<unknown>("/api/pm2/start", {
       method: "POST",
       body: JSON.stringify({
-        script: "bash",
-        args: ["-c", wrappedCommand],
+        script: scriptFile,
         name: pm2Name,
         cwd,
-        interpreter: "none",
+        interpreter: "bash",
         autorestart: false,
       }),
     });
@@ -202,7 +216,7 @@ async function runCommandViaPm2(opts: {
     for (let cycle = 0; cycle < maxCycles; cycle++) {
       if (signal.aborted) {
         await client.deleteProcess(pm2Name);
-        cleanup(client, exitCodeFile);
+        await cleanupScriptFiles(client, scriptFile, exitCodeFile);
         return { success: false, error: "Exécution annulée" };
       }
 
@@ -213,7 +227,7 @@ async function runCommandViaPm2(opts: {
       if (!statusResult.data) {
         // Process gone — check exit code file
         const exitCode = await readExitCode(client, exitCodeFile);
-        await cleanup(client, exitCodeFile);
+        await cleanupScriptFiles(client, scriptFile, exitCodeFile);
         if (exitCode !== null && exitCode !== 0) {
           onLog(`${logPrefix} ✗ Commande échouée (exit code: ${exitCode})`);
           await flushLogs();
@@ -239,7 +253,7 @@ async function runCommandViaPm2(opts: {
         // Read exit code from temp file
         const exitCode = await readExitCode(client, exitCodeFile);
         await client.deleteProcess(pm2Name);
-        await cleanup(client, exitCodeFile);
+        await cleanupScriptFiles(client, scriptFile, exitCodeFile);
 
         if (exitCode !== null && exitCode !== 0) {
           onLog(`${logPrefix} ✗ Commande échouée — exit code: ${exitCode} (${elapsedMin}min)`);
@@ -248,7 +262,6 @@ async function runCommandViaPm2(opts: {
         }
 
         if (status === "errored" && exitCode === null) {
-          // PM2 says errored but no exit code file — something bad happened
           onLog(`${logPrefix} ✗ Erreur PM2 (${elapsedMin}min)`);
           await flushLogs();
           return { success: false, error: "Commande échouée (PM2 errored)" };
@@ -264,15 +277,22 @@ async function runCommandViaPm2(opts: {
     }
 
     await client.deleteProcess(pm2Name);
-    await cleanup(client, exitCodeFile);
+    await cleanupScriptFiles(client, scriptFile, exitCodeFile);
     return { success: false, error: `Timeout (>${Math.floor(maxDuration / 60)}min)` };
   } catch (error) {
     try { await client.deleteProcess(pm2Name); } catch { /* ignore */ }
-    await cleanup(client, exitCodeFile);
+    await cleanupScriptFiles(client, scriptFile, exitCodeFile);
     return { success: false, error: error instanceof Error ? error.message : "Execution error" };
   } finally {
     unregisterPm2();
     if (socket) { try { socket.disconnect(); } catch { /* ignore */ } }
+  }
+}
+
+/** Clean up temp script + exit code files (uses writeFile since exec may 404) */
+async function cleanupScriptFiles(client: VpsClient, ...files: string[]): Promise<void> {
+  for (const f of files) {
+    try { await client.writeFile(f, ""); } catch { /* ignore */ }
   }
 }
 
@@ -288,10 +308,10 @@ async function readExitCode(client: VpsClient, filePath: string): Promise<number
   return null;
 }
 
-/** Clean up the temp exit code file */
+/** Clean up a temp file (uses writeFile to empty it since exec may 404) */
 async function cleanup(client: VpsClient, filePath: string): Promise<void> {
   try {
-    await client.exec(`rm -f ${filePath}`, "/tmp", 5000);
+    await client.writeFile(filePath, "");
   } catch { /* ignore */ }
 }
 
@@ -768,15 +788,17 @@ async function cleanupTippecanoe(client: VpsClient, scriptPath: string, exitCode
 // S3/R2 Upload Executor
 // ==========================================
 export async function executeS3Upload(ctx: ExecutorContext): Promise<ExecutorResult> {
-  const config = ctx.nodeData.config as { files: { source: string; destKey: string }[]; bucket: string; endpoint: string; profile: string; prefix: string };
+  const config = ctx.nodeData.config as { files: string[]; bucket: string; endpoint: string; profile: string; prefix: string };
   const total = (config.files || []).length;
 
   for (let i = 0; i < total; i++) {
-    const file = config.files[i];
-    const destKey = file.destKey || `${config.prefix || ""}${file.source}`;
-    const command = `aws s3 cp ${file.source} s3://${config.bucket}/${destKey} --endpoint-url ${config.endpoint} --profile ${config.profile}`;
+    const filePath = config.files[i];
+    // destKey = prefix + filename (e.g. "permis/" + "test.pmtiles")
+    const fileName = filePath.replace(/^.*\//, "");
+    const destKey = `${config.prefix || ""}${fileName}`;
+    const command = `aws s3 cp ${filePath} s3://${config.bucket}/${destKey} --endpoint-url ${config.endpoint} --profile ${config.profile}`;
 
-    ctx.onLog(`[s3] (${i + 1}/${total}) ${file.source}`);
+    ctx.onLog(`[s3] (${i + 1}/${total}) ${filePath} → s3://${config.bucket}/${destKey}`);
 
     const result = await runCommand({
       client: ctx.client, command, cwd: ctx.rootPath,
@@ -787,8 +809,8 @@ export async function executeS3Upload(ctx: ExecutorContext): Promise<ExecutorRes
       vpsHost: ctx.vpsHost, vpsAgentPort: ctx.vpsAgentPort, vpsApiKey: ctx.vpsApiKey,
     });
 
-    if (!result.success) return { success: false, error: `S3 failed: ${file.source} — ${result.error}` };
-    ctx.onLog(`[s3] ✓ ${file.source}`);
+    if (!result.success) return { success: false, error: `S3 failed: ${filePath} — ${result.error}` };
+    ctx.onLog(`[s3] ✓ ${fileName}`);
   }
 
   ctx.onLog(`[s3] ✓ ${total} fichiers uploadés`);

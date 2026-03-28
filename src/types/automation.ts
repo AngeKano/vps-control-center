@@ -60,7 +60,7 @@ export interface TippecanoeConfig {
 }
 
 export interface S3Config {
-  files: { source: string; destKey: string }[];
+  files: string[];
   bucket: string;
   endpoint: string;
   profile: string;

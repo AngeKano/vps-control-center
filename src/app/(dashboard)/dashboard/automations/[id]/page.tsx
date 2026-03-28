@@ -7,6 +7,7 @@ import {
   Background,
   MiniMap,
   addEdge,
+  reconnectEdge,
   useNodesState,
   useEdgesState,
   Handle,
@@ -36,6 +37,7 @@ import {
   X,
   Server,
   Trash2,
+  Copy,
   ChevronRight,
   Terminal,
   FolderSync,
@@ -554,6 +556,34 @@ function AutomationCanvasInner() {
     setSelectedNodeId(null);
   };
 
+  // ---- Duplicate node ----
+  const handleDuplicateNode = (nodeId: string) => {
+    const sourceNode = nodes.find((n) => n.id === nodeId);
+    if (!sourceNode) return;
+    const newNode: Node = {
+      id: `node-${Date.now()}`,
+      type: "automation",
+      position: {
+        x: sourceNode.position.x + 50,
+        y: sourceNode.position.y + 80,
+      },
+      data: JSON.parse(JSON.stringify(sourceNode.data)),
+    };
+    // Append "(copie)" to the label
+    const d = newNode.data as unknown as AutomationNodeData;
+    d.label = `${d.label} (copie)`;
+    setNodes((nds: Node[]) => [...nds, newNode]);
+    setSelectedNodeId(newNode.id);
+  };
+
+  // ---- Reconnect edge ----
+  const onReconnect = useCallback(
+    (oldEdge: Edge, newConnection: Connection) => {
+      setEdges((eds: Edge[]) => reconnectEdge(oldEdge, newConnection, eds));
+    },
+    [setEdges]
+  );
+
   // ---- Update node data ----
   const updateNodeData = (nodeId: string, newData: Partial<AutomationNodeData>) => {
     setNodes((nds: Node[]) =>
@@ -829,12 +859,15 @@ function AutomationCanvasInner() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onReconnect={onReconnect}
             onNodeClick={onNodeClick}
             onPaneClick={onPaneClick}
             nodeTypes={nodeTypes}
             nodesDraggable={!canvasLocked}
             nodesConnectable={!canvasLocked}
             elementsSelectable={!canvasLocked}
+            edgesReconnectable={!canvasLocked}
+            deleteKeyCode={canvasLocked ? null : "Delete"}
             fitView
             className="bg-background"
             defaultEdgeOptions={{
@@ -879,6 +912,16 @@ function AutomationCanvasInner() {
                         <RotateCcw className="h-3.5 w-3.5" />
                       </Button>
                     )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      title="Dupliquer ce noeud"
+                      onClick={() => handleDuplicateNode(selectedNode.id)}
+                      disabled={isRunning}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -1658,21 +1701,10 @@ function NodeTypeConfig({
               <Input value={c.profile || ""} onChange={(e) => updateConfig({ profile: e.target.value })} placeholder="r2" className="h-7 text-xs font-mono" />
             </div>
           </div>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-xs">Fichiers</Label>
-              <button className="text-xs text-primary hover:underline" onClick={() => updateConfig({ files: [...(c.files || []), { source: "", destKey: "" }] })}>+ Ajouter</button>
-            </div>
-            {(c.files || []).map((f: { source: string; destKey: string }, i: number) => (
-              <div key={i} className="flex items-center gap-1">
-                <Input value={f.source} onChange={(e) => { const files = [...(c.files || [])]; files[i] = { ...files[i], source: e.target.value }; updateConfig({ files }); }} placeholder="pa.pmtiles" className="h-7 text-xs font-mono flex-1" />
-                <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-                <Input value={f.destKey} onChange={(e) => { const files = [...(c.files || [])]; files[i] = { ...files[i], destKey: e.target.value }; updateConfig({ files }); }} placeholder="permis/pa.pmtiles" className="h-7 text-xs font-mono flex-1" />
-                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={() => updateConfig({ files: (c.files || []).filter((_: { source: string; destKey: string }, idx: number) => idx !== i) })}>
-                  <X className="h-3 w-3" />
-                </Button>
-              </div>
-            ))}
+          <div className="space-y-1.5">
+            <Label className="text-xs">Fichiers</Label>
+            <textarea value={(c.files || []).join("\n")} onChange={(e) => updateConfig({ files: e.target.value.split("\n").filter((f: string) => f.trim()) })} placeholder={"/home/manu/.../test.pmtiles\n/home/manu/.../pa.pmtiles"} className="w-full min-h-[50px] rounded-md border border-input bg-background px-3 py-2 text-xs font-mono resize-y" rows={3} />
+            <p className="text-[10px] text-muted-foreground">Un chemin absolu par ligne. Destination = prefix + nom du fichier</p>
           </div>
         </div>
       );
