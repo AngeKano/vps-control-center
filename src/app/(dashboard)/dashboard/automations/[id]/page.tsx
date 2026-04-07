@@ -323,6 +323,8 @@ function AutomationCanvasInner() {
   // Execution
   const [currentRun, setCurrentRun] = useState<AutomationRun | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [recovering, setRecovering] = useState(false);
+  const [staleRun, setStaleRun] = useState<AutomationRun | null>(null);
   const [selectedNodeLogs, setSelectedNodeLogs] = useState<string[]>([]);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -491,6 +493,56 @@ function AutomationCanvasInner() {
       console.error("Error:", error);
     }
   };
+
+  // ---- Recover stale run ----
+  const handleRecover = useCallback(async (runId: string) => {
+    setRecovering(true);
+    try {
+      const res = await fetch(`/api/automations/${automationId}/run/${runId}/recover`, { method: "POST" });
+      const data = await res.json();
+      if (data.success && data.recovered) {
+        const run = data.data as AutomationRun;
+        setCurrentRun(run);
+        setStaleRun(null);
+        // Update node visual states
+        const states = (run.nodeStates || {}) as Record<string, NodeState>;
+        setNodes((nds: Node[]) => nds.map((n) => ({ ...n, data: { ...n.data, runStatus: states[n.id]?.status || "DRAFT" } })));
+        if (run.status === "RUNNING") {
+          // Process still running on VPS — resume polling
+          setIsRunning(true);
+          startPolling(run.id);
+        } else {
+          fetchAutomation();
+        }
+      }
+    } catch (error) {
+      console.error("Recovery error:", error);
+    } finally {
+      setRecovering(false);
+    }
+  }, [automationId, setNodes, startPolling, fetchAutomation]);
+
+  // ---- Auto-detect stale runs on page load ----
+  useEffect(() => {
+    if (!automation || isRunning || recovering) return;
+    // Check if the automation has a RUNNING status but we're not polling
+    if (automation.status === "RUNNING" && !pollRef.current) {
+      // Fetch the latest run to check
+      fetch(`/api/automations/${automationId}/run`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success && data.data?.length > 0) {
+            const latestRun = data.data[0] as AutomationRun;
+            if (latestRun.status === "RUNNING") {
+              setStaleRun(latestRun);
+              // Auto-recover
+              handleRecover(latestRun.id);
+            }
+          }
+        })
+        .catch(() => {});
+    }
+  }, [automation, automationId, isRunning, recovering, handleRecover]);
 
   // ---- Connect edges ----
   const onConnect = useCallback(
@@ -789,6 +841,16 @@ function AutomationCanvasInner() {
             <Button size="sm" variant="destructive" onClick={handleStop}>
               <Square className="h-4 w-4 mr-1" />
               Stop
+            </Button>
+          ) : recovering ? (
+            <Button size="sm" disabled>
+              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              Vérification...
+            </Button>
+          ) : staleRun ? (
+            <Button size="sm" variant="outline" onClick={() => handleRecover(staleRun.id)}>
+              <RefreshCw className="h-4 w-4 mr-1" />
+              Vérifier l&apos;état
             </Button>
           ) : (
             <Button size="sm" onClick={() => handleRun()}>

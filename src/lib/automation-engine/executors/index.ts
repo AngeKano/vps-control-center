@@ -297,7 +297,7 @@ async function cleanupScriptFiles(client: VpsClient, ...files: string[]): Promis
 }
 
 /** Read exit code from temp file left by the PM2 wrapper */
-async function readExitCode(client: VpsClient, filePath: string): Promise<number | null> {
+export async function readExitCode(client: VpsClient, filePath: string): Promise<number | null> {
   try {
     const result = await client.readFile(filePath);
     if (result.success && result.data?.content) {
